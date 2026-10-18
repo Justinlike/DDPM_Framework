@@ -51,9 +51,20 @@ class BaseDataset(Dataset):
         self.valid_index = valid_index
         self.seed = seed
 
+        # split dataset into train, valid, and test sets
+        
+
         # load rgb and mask paths
         self.image_filenames = [os.path.join(dataset_dir, self.rgb_subfolder, f"{base_filename}{self.rgb_name_mode}") for base_filename in self.base_filenames]
         self.mask_filenames = [os.path.join(dataset_dir, self.mask_subfolder, f"{base_filename}{self.mask_name_mode}") for base_filename in self.base_filenames]
+
+    def _split(self, image_paths, mask_paths):
+        if self.split == 'train':
+            return image_paths[:self.train_index], mask_paths[:self.train_index]
+        elif self.split == 'valid':
+            return image_paths[self.train_index:self.valid_index], mask_paths[self.train_index:self.valid_index]
+        else:
+            return image_paths[self.valid_index:], mask_paths[self.valid_index:]
         
     def __len__(self):
         return len(self.image_paths)
