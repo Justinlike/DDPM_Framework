@@ -44,7 +44,9 @@ class BaseDataset(Dataset):
         self.mask_name_mode = mask_name_mode
 
         # load base filenames
-        base_filenames = os.listdir(os.path.join(self.dataset_dir, self.rgb_subfolder))
+        # 先拼接出目标文件夹，然后将目标后缀的文件取出来
+        # basename就是
+        base_filenames = os.listdir(os.path.join(self.dataset_dir, self.rgb_subfolder)) 
         self.base_filenames = [os.path.basename(f).split('.')[0] for f in base_filenames if f.endswith(self.rgb_name_mode)]
 
         self.train_index = train_index
@@ -52,7 +54,9 @@ class BaseDataset(Dataset):
         self.seed = seed
 
         # split dataset into train, valid, and test sets
-        
+        if self.train_index is None:
+            assert split in["train", "val", "test"], f"Invalid split mode: {split}"
+            self.base_filenames = self._split(self.base_filenames, self.base_filenames)
 
         # load rgb and mask paths
         self.image_filenames = [os.path.join(dataset_dir, self.rgb_subfolder, f"{base_filename}{self.rgb_name_mode}") for base_filename in self.base_filenames]
@@ -65,15 +69,28 @@ class BaseDataset(Dataset):
             return image_paths[self.train_index:self.valid_index], mask_paths[self.train_index:self.valid_index]
         else:
             return image_paths[self.valid_index:], mask_paths[self.valid_index:]
-        
+    
+    def _flip(self, rgb: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if random.random() > 0.5:
+            rgb, mask = F.hflip(rgb), F.hflip(mask)
+        if random.random() > 0.5:
+            rgb, mask = F.vflip(rgb), F.vflip(mask)
+        return rgb, mask
+    
     def __len__(self):
         return len(self.image_paths)
 
     def __getitem__(self, idx):
-        img_path = self.image_paths[idx]
-        image = Image.open(img_path).convert('RGB')
+        image = Image.open(self.image_filenames[idx]).convert("RGB")
+        mask = Image.open(self.mask_filenames[idx]).convert("RGB")
+        image = self.iamge_trasform(image)
+        mask = self.mask_transform(mask)
 
-        if self.transform:
-            image = self.transform(image)
+        # 只对训练数据集增强
+        if self.split == "train":
+            image, mask = self._flip(image, mask)
 
-        return image
+        return {
+            "img": image,
+            "mask": mask
+        }
