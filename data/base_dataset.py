@@ -3,7 +3,7 @@ import random
 import torch
 from PIL import Image
 from torch.utils.data import Dataset
-form torchvision import transforms
+from torchvision import transforms
 
 class BaseDataset(Dataset):
     def __init__(
@@ -44,8 +44,8 @@ class BaseDataset(Dataset):
         self.mask_name_mode = mask_name_mode
 
         # load base filenames
-        # 先拼接出目标文件夹，然后将目标后缀的文件取出来
-        # basename就是
+        # 先拼接出目标文件夹，然后将目标后缀的文件取出来  dataset_dir = "/data/jzk/CT/data_522/train",
+        # 
         base_filenames = os.listdir(os.path.join(self.dataset_dir, self.rgb_subfolder)) 
         self.base_filenames = [os.path.basename(f).split('.')[0] for f in base_filenames if f.endswith(self.rgb_name_mode)]
 
@@ -53,22 +53,24 @@ class BaseDataset(Dataset):
         self.valid_index = valid_index
         self.seed = seed
 
+        # 如果传入索引，按索引划分train, valid and test sets
         # split dataset into train, valid, and test sets
-        if self.train_index is None:
+        if self.train_index is not None:
             assert split in["train", "val", "test"], f"Invalid split mode: {split}"
-            self.base_filenames = self._split(self.base_filenames, self.base_filenames)
+            self.base_filenames = self._split(self.base_filenames)
 
         # load rgb and mask paths
         self.image_filenames = [os.path.join(dataset_dir, self.rgb_subfolder, f"{base_filename}{self.rgb_name_mode}") for base_filename in self.base_filenames]
         self.mask_filenames = [os.path.join(dataset_dir, self.mask_subfolder, f"{base_filename}{self.mask_name_mode}") for base_filename in self.base_filenames]
 
-    def _split(self, image_paths, mask_paths):
-        if self.split == 'train':
-            return image_paths[:self.train_index], mask_paths[:self.train_index]
-        elif self.split == 'valid':
-            return image_paths[self.train_index:self.valid_index], mask_paths[self.train_index:self.valid_index]
-        else:
-            return image_paths[self.valid_index:], mask_paths[self.valid_index:]
+    def _split(self, base_filenames, ):
+        random.seed(self.seed)
+        if self.split == "train":
+            return self.base_filenames[:self.train_index]
+        if self.split == "valid":
+            return self.base_filenames[self.train_index:self.valid_index]
+        else: # test
+            return self.base_filenames[self.valid_index:]
     
     def _flip(self, rgb: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         if random.random() > 0.5:
@@ -78,7 +80,8 @@ class BaseDataset(Dataset):
         return rgb, mask
     
     def __len__(self):
-        return len(self.image_paths)
+        # 返回 rgb 文件夹中有多少个文件
+        return len(self.image_filenames)
 
     def __getitem__(self, idx):
         image = Image.open(self.image_filenames[idx]).convert("RGB")
@@ -94,3 +97,12 @@ class BaseDataset(Dataset):
             "img": image,
             "mask": mask
         }
+
+# datas = BaseDataset(
+#     dataset_dir = "/data/jzk/CT/data_522/train",
+#     split = "train",
+#     rgb_subfolder="ncct", 
+#     mask_subfolder="ccta", 
+#     rgb_name_mode="nii.gz", 
+# )
+# print(len(datas))
