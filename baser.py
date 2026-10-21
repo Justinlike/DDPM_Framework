@@ -36,6 +36,8 @@ class Baser():
 
             #return {'predicted': imgs.clamp(-10,10)}
 
+        # autocast 让内部符合条件的算子自动用低精度
+        # CUDA: fp16/bfloat16，CPU: bfloat16
         with torch.autocast(imgs.device.type):
             if require_grad:
                 output = self.model(imgs, labels, **kwargs)
