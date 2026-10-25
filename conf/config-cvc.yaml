@@ -1,0 +1,50 @@
+seed: 1337
+task: recon
+metrics:
+  - mse
+  - psnr
+nrow: 6
+output_dir: output
+job_name: leaf
+excluding_modules: 
+  - vae
+
+#model
+model: leaf
+optimizer: adamw
+lr: 4.0e-5
+weight_decay: 0.01
+criterion: in
+
+lr_scheduler: constant_with_warmup
+num_warmup_steps: 10000
+
+#train
+resume: null
+freeze_modules:
+  - vae
+use_ema: false
+mixed_precision: bf16
+gradient_accumulation_steps: 1
+prediction_type: sample
+max_train_steps: 50000
+save_step_freq: 200
+
+
+#evaluate 
+evaluate: false
+validation_start_steps: 10000
+validation_steps: 200
+compare: min
+monitor: mse
+visual: true
+
+#dataset
+base_data_dir: /mnt/sda1/lhw/project/CT/data_png
+dataset_name: ct
+resolution: 256
+train_batch_size: 4
+test_batch_size: 64
+num_workers: 8
+
+

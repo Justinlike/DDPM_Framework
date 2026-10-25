@@ -1,0 +1,50 @@
+seed: 1337
+task: recon
+metrics:
+  - mse
+  - psnr
+nrow: 6
+output_dir: output
+job_name: jct2d_noise_x0loss
+excluding_modules: null
+
+#model
+model: jct2d_noise
+optimizer: adamw
+lr: 1.0e-4
+weight_decay: 0.005
+criterion: in
+
+lr_scheduler: constant_with_warmup
+num_warmup_steps: 10000
+
+#train
+resume: /mnt/sda1/lhw/project/CT/new_framework/output/jct2d_noise_x0loss/checkpoint/checkpoint-best.ckpt
+freeze_modules: null
+use_ema: false
+mixed_precision: bf16
+gradient_accumulation_steps: 1
+prediction_type: sample
+max_train_steps: 50000
+save_step_freq: 200
+
+#evaluate 
+evaluate: true
+validation_start_steps: 10000
+validation_steps: 200
+compare: max
+monitor: psnr
+visual: false     # 训练中可视化
+
+#dataset
+base_data_dir: /mnt/sda1/lhw/project/CT/data_522
+dataset_name: ct
+resolution: 
+ - 512
+ - 512
+ - 4
+train_batch_size: 1
+test_batch_size: 1
+num_workers: 8
+
+

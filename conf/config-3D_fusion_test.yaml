@@ -1,0 +1,52 @@
+seed: 1337
+task: recon
+metrics:
+  - mse
+  - psnr
+nrow: 6
+output_dir: output
+job_name: ctco
+excluding_modules: 
+  - vae
+
+#model
+model: ctco
+optimizer: adamw
+lr: 4.0e-5
+weight_decay: 0.01
+criterion: in
+
+lr_scheduler: constant_with_warmup
+num_warmup_steps: 10000
+
+#train
+resume: /mnt/sda1/lhw/project/CT/new_framework/output/ctco/checkpoint/checkpoint-best.ckpt
+freeze_modules:
+  - vae
+use_ema: false
+mixed_precision: bf16
+gradient_accumulation_steps: 1
+prediction_type: previous
+max_train_steps: 30000
+save_step_freq: 200
+
+#evaluate 
+evaluate: true
+validation_start_steps: 5000
+validation_steps: 200
+compare: min
+monitor: mse
+visual: false     # 训练中可视化
+
+#dataset
+base_data_dir: /mnt/sda1/lhw/project/CT/data_cba
+dataset_name: ct3d
+resolution:
+ - 256
+ - 256
+ - 8
+train_batch_size: 4
+test_batch_size: 1
+num_workers: 8
+
+

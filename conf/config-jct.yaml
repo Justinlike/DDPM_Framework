@@ -5,15 +5,21 @@ metrics:
   - psnr
 nrow: 6
 output_dir: output
-job_name: jct_vpred_justin1
+job_name: jct_test1
 excluding_modules: null
+
+# tracker
+report_to: wandb          # 可选 "wandb" / "tensorboard" / "all"
+wandb_project: ddpm_ct
+wandb_entity: justinji_2545-shenzhen-university        # 你的 team 名，个人账号可留 null
+wandb_run_name: jct_test1        # 运行名，与 job_name 一致即可，方便在 wandb 上查看
 
 #model
 model: jct
 optimizer: adamw
 lr: 4.0e-5
 weight_decay: 0.01
-ctiterion: in
+criterion: in
 
 lr_scheduler: constant_with_warmup
 num_warmup_steps: 10000 # 10 000
@@ -23,15 +29,15 @@ resume: null
 freeze_modules: null
 use_ema: false
 mixed_precision: bf16
-gradient_accumulation_steps: 1
+gradient_accumulation_steps: 2 # 1
 prediction_type: sample
-max_train_steps: 100000 # 100 000
-save_step_freq: 2000 # 200
+max_train_steps: 100 # 100 000
+save_step_freq: 20 # 200
 
 #evaluate 
 evaluate: false
-validation_start_steps: 10000
-validation_steps: 200 # 200
+validation_start_steps: 10 # 10 000
+validation_steps: 50 # 200
 compare: max
 monitor: psnr
 visual: false     # 训练中可视化

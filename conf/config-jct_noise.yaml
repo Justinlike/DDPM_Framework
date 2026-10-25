@@ -1,0 +1,50 @@
+seed: 42
+task: recon
+metrics:
+  - mse
+  - psnr
+nrow: 6
+output_dir: output
+job_name: jct_noise
+excluding_modules: null
+
+#model
+model: jct_noise
+optimizer: adamw
+lr: 4.0e-5
+weight_decay: 0.01
+criterion: in
+
+lr_scheduler: constant_with_warmup
+num_warmup_steps: 30000
+
+#train
+resume: null
+freeze_modules: null
+use_ema: false
+mixed_precision: bf16
+gradient_accumulation_steps: 1
+prediction_type: sample
+max_train_steps: 100000
+save_step_freq: 200
+
+#evaluate 
+evaluate: false
+validation_start_steps: 30000
+validation_steps: 200
+compare: max
+monitor: psnr
+visual: false     # 训练中可视化
+
+#dataset
+base_data_dir: /mnt/sda1/lhw/project/CT/data_cba
+dataset_name: ct3d
+resolution:
+ - 256
+ - 256
+ - 8
+train_batch_size: 4
+test_batch_size: 1
+num_workers: 24
+
+

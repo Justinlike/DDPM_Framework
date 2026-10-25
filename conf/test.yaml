@@ -1,0 +1,48 @@
+seed: 1337
+task: seg
+metrics:
+  - dice
+  - miou
+nrow: 6
+output_dir: output
+job_name: diff_test
+excluding_modules: 
+  - vae
+
+#model
+model: leaf
+optimizer: adamw
+lr: 4.0e-5
+weight_decay: 0.01
+criterion: in
+
+lr_scheduler: constant_with_warmup
+num_warmup_steps: 10000
+
+#train
+resume: /mnt/sda1/lhw/project/US/new_framework/output/diff_test/checkpoint/checkpoint-last.ckpt
+freeze_modules:
+  - vae
+use_ema: false
+mixed_precision: bf16
+gradient_accumulation_steps: 1
+prediction_type: sample
+max_train_steps: 100000 # 100 000
+save_step_freq: 5000    # 5 000
+
+#evaluate 
+evaluate: true
+validation_start_steps: 30000 # 30 000
+validation_steps: 200         # 200
+compare: max
+monitor: dice
+
+#dataset
+base_data_dir: /data/jzk/CT/data_522
+dataset_name: brain
+resolution: 
+train_batch_size: 8
+test_batch_size: 64
+num_workers: 8
+
+

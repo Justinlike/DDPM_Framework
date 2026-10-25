@@ -1,12 +1,12 @@
 from torch.nn.modules import ConvTranspose2d
 # from .brain import Brain
 from .ct import CT2D, CT3D
-from .base_dataset import BaseSegDataset
+from .base_dataset import BaseDataset
 from torch.utils.data import DataLoader
 import torch
 import numpy as np
 
-dataset_type_dict: dict[str, type[BaseSegDataset]] = {
+dataset_type_dict: dict[str, type[BaseDataset]] = {
     "ct": CT2D,
     "ct3d": CT3D
 }
@@ -53,7 +53,7 @@ def collate_fn(examples):
     pixel_values = torch.stack([_to_tensor(example["imgs"]) for example in examples], dim=0)
     pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
 
-    mask_values = torch.stack([_to_tensor(example["labels"] for example in examples)], dim=0)
+    mask_values = torch.stack([_to_tensor(example["labels"]) for example in examples], dim=0)
     mask_values = mask_values.to(memory_format=torch.contiguous_format).float()
 
     return {"imgs": pixel_values, "labels": mask_values}
@@ -74,7 +74,7 @@ def build_dataset(
     data_type = dataset_type_dict[dataset_type]
     dataset_dir = base_data_dir
     return (
-        data_type(base_data_dir=dataset_dir, split="train", resolution=resolution, seed=seed, **kwargs),
-        data_type(base_data_dir=dataset_dir, split="test", resolution=resolution, seed=seed, **kwargs),
-        data_type(base_data_dir=dataset_dir, split="test", resolution=resolution, seed=seed, **kwargs)
+        data_type(dataset_dir=dataset_dir, split="train", resolution=resolution, seed=seed, **kwargs),
+        data_type(dataset_dir=dataset_dir, split="test", resolution=resolution, seed=seed, **kwargs),
+        data_type(dataset_dir=dataset_dir, split="test", resolution=resolution, seed=seed, **kwargs)
     )

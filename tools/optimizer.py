@@ -2,20 +2,19 @@ from torch import optim as optim
 import torch
 import numpy as np
 
-def build_optimizer(args, model):
+def build_optimizer(model, args):
     
-    opti = args.optimizer.lower()
-    if opti == 'sgd':
+    optimizer = args.optimizer.lower()
+    if optimizer == 'sgd':
         optimizer = optim.SGD(params=model.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.weight_decay)
-    elif opti == 'adam':
+    elif optimizer == 'adam':
         optimizer = optim.Adam(params=model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.95))
-    elif opti == 'adamw':
+    elif optimizer == 'adamw':
         optimizer = optim.AdamW(params=model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.95))
     else:
-        raise NotImplementedError(f'Unkown optimizer:{opti}')
+        raise NotImplementedError(f'Unkown optimizer:{optimizer}')
     
     return optimizer
-
 
 
 class NativeScalerWithGradNormCount:

@@ -46,10 +46,12 @@ class Trainer(Baser):
             initial=0,
             desc="Traing Steps",
             # Only show the progress bar once on each machine.
+            # 新加
+            leave=False,
             disable=not self.accelerator.is_local_main_process, 
         )
 
-        metric = {}
+        metrics = {}
         # PSNR: MAX, MSE: MIN
         if self.cfg.compare == 'max':
             best_score = 0
@@ -59,7 +61,7 @@ class Trainer(Baser):
 
         for epoch in range(max_epoch):
             self.model.train()
-            trian_loss = 0.0
+            train_loss = 0.0
 
             if global_step >= self.cfg.max_train_steps:
                 break
@@ -80,7 +82,7 @@ class Trainer(Baser):
                         rand_num_generator = None
 
                     output = self.forward(batch, **{'generator': rand_num_generator})
-                    if self.args.ctiterion == "in":
+                    if self.args.criterion == "in":
                         loss = output["loss"]
                     else:
                         loss = self.compute_loss(output, batch['labels'])
@@ -98,21 +100,23 @@ class Trainer(Baser):
                     # Backpropagate
                     self.accelerator.backward(loss)
                     if self.accelerator.sync_gradients:
-                        self.accelerator.clip_grad_norm_(List(self.model.parameterss()), 1.0)
+                        self.accelerator.clip_grad_norm_(list(self.model.parameters()), 1.0)
 
                         self.optimizer.step()
                         self.lr_scheduler.step()
                         self.optimizer.zero_grad()
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
+                # 累积到一定步数 (gradient_accumulation_steps) 后才会执行优化器的 step()，所以这里要判断是否执行了优化器的 step()
                 if self.accelerator.sync_gradients:
                     if self.cfg.use_ema:
                         #ema_unet.step(unet.parameters())
                         pass   #ema 以后加
                     progress_bar.update(1)
                     global_step += 1
-                    train_loss = 0.0
 
+
+                    # EVALUATE the model on the validation set for save the best model checkpoints
                     #if self.accelerator.is_main_process:
                     if global_step > self.cfg.validation_start_steps and global_step % self.cfg.validation_steps == 0:
                         if self.cfg.use_ema:
@@ -124,28 +128,38 @@ class Trainer(Baser):
                             self.accelerator.wait_for_everyone()
 
                         if self.accelerator.is_main_process and self.compare(best_score, metrics[self.cfg.monitor]):
+                            # 保存最佳模型
                             save_model(self.cfg, epoch, self.model, self.accelerator, self.optimizer, loss_scaler=self.lr_scheduler, epoch_name="bset")
                             best_score = metrics[self.cfg.monitor]
-                            self.logger.info(f"Bset Dice Score at epoch / step: {epoch} / {global_step}: {best_score:.4f}")
+                            self.logger.info(f"Bset {self.cfg.monitor} Score at epoch / step: {epoch} / {global_step}: {best_score:.4f}")
 
-                logs = {"step_loss": loss.detach().items(), 
+                # logs = {"step_loss": loss.detach().items(), 
+                #         "lr": self.lr_scheduler.get_last_lr()[0],
+                #         "train_loss": train_loss / self.cfg.gradient_accumulation_steps}
+                logs = {"step_loss": loss.item(), # detach冗余，因为item取出的标量本身就不在计算图中了
                         "lr": self.lr_scheduler.get_last_lr()[0],
-                        "train_loss": train_loss / self.cfg.gradient_accumulation_steps}
+                        # train 和 step loss 不能用来选择模型，单步step是随机的，大小只取决于随机出来的t
+                        "train_loss": train_loss / self.cfg.gradient_accumulation_steps} 
                 progress_bar.set_postfix({**logs, **metrics})
-                self.accelerator.log(logs, step)
+
+                # self.accelerator.log(logs, step) 会导致覆盖
+                self.accelerator.log(logs, step=global_step)
+
             if global_step % self.cfg.save_step_freq == 0 and self.accelerator.is_main_process:
                 save_model(self.cfg, epoch, self.model, self.accelerator, self.optimizer, loss_scaler=self.lr_scheduler, epoch_name="last")
 
+        # 难不成都用的是Dice？
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
         self.logger.info(f"Training time {total_time_str}")
-        self.logger.info(f"Best Dice Score: {best_score:.4f}")
+        self.logger.info(f"Best Moniter(PSNR) Score: {best_score:.4f}")
 
     def compare(self, best_score, cur_score):
         if self.cfg.compare == "min":
             return cur_score < best_score
         elif self.cfg.compare == "max":
             return cur_score > best_score
+        # 相等的情况怎么办？
         else:
             raise("error compare !!! ")
 
@@ -156,10 +170,16 @@ class Trainer(Baser):
             return {}
 
         metrics = build_metric(self.cfg, self.accelerator.device)
-        visual = Visualization()
+        visual = Visualization() if self.cfg.visual else None
+
         with torch.autocast(self.accelerator.device.type):
-            # 
-            for batch in self.valid_loader:
+            val_bar = tqdm(self.valid_loader, 
+                           desc="Validation", 
+                           leave=False,
+                           disable=not self.accelerator.is_main_process)
+            # for batch in tqdm(self.valid_loader, desc="Validation", disable=not self.accelerator.is_main_process):
+            # for batch in self.valid_loader:
+            for batch in val_bar:
                 seed = val_seed_ls. pop()
                 if seed is None:
                     generator = None
@@ -169,7 +189,20 @@ class Trainer(Baser):
                 output = self.forward(batch, require_grad=False, **{"generator": generator})
                 pred, gt = self.postprocess(batch, output)
 
-                metrics.update()
+                metrics.update(pred, gt)
+                if visual is not None:
+                    visual.update(batch["imgs"].cpu(), pred.cpu(), gt.cpu())
+
+        if self.cfg.visual:
+            grid = visual.sample(nrow=self.cfg.nrow)
+            grid = np.clip(grid, 0.0, 1.0)
+            images = Image.fromarray((grid * 255).astype(np.uint8))
+            images.save(os.path.join(self.cfg.output_dir, self.cfg.job_name, "visualization", f"step-{step:06d}.jpg"))
+        results = metrics.compute()
+        self.accelerator.log(results, step=step)
+        return results
+    
+
 
 
 

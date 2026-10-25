@@ -1,5 +1,5 @@
 import os
-from base_dataset import BaseDataset
+from .base_dataset import BaseDataset
 import nibabel as nib
 import torch
 import torchio as tio

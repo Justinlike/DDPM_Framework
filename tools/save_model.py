@@ -8,6 +8,7 @@ def save_model(args, epoch, model, accelerator, optimizer, loss_scaler, ema_para
     if epoch_name is None:
         epoch_name = str(epoch)
     output_dir = Path(out_run)
+    output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = output_dir / ('checkpoint-%s.ckpt' % epoch_name)
 
     # 关键1：用 Accelerator 的 is_main_process 判断主进程（比自定义 is_main_process 更可靠）
@@ -22,6 +23,7 @@ def save_model(args, epoch, model, accelerator, optimizer, loss_scaler, ema_para
 
     # ema
     if ema_params is not None:
+            # 创建 EMA 模型的状态字典
             ema_state_dict = copy.deepcopy(unwrapped_model .state_dict())
             for i, (name, _value) in enumerate(unwrapped_model.named_parameters()):
                 assert name in ema_state_dict

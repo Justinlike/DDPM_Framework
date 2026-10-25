@@ -1,0 +1,56 @@
+seed: 1337
+task: recon
+metrics:
+  - mse
+  - psnr
+nrow: 6
+output_dir: output
+job_name: jct_50
+excluding_modules: null
+
+# tracker
+report_to: wandb          # 可选 "wandb" / "tensorboard" / "all"
+wandb_project: ddpm_ct
+wandb_entity: justinji_2545-shenzhen-university        # 你的 team 名，个人账号可留 null
+wandb_run_name: jct_test1        # 运行名，与 job_name 一致即可，方便在 wandb 上查看
+
+#model
+model: jct
+optimizer: adamw
+lr: 4.0e-5
+weight_decay: 0.01
+criterion: in
+
+lr_scheduler: constant_with_warmup
+num_warmup_steps: 10000
+
+#train
+resume: /data/jzk/DDPM_Framework/output/jct_test/checkpoint/checkpoint-best.ckpt
+freeze_modules: null
+use_ema: false
+mixed_precision: bf16
+gradient_accumulation_steps: 1
+prediction_type: sample
+max_train_steps: 30000
+save_step_freq: 200
+
+#evaluate 
+evaluate: true
+validation_start_steps: 10000
+validation_steps: 200
+compare: max
+monitor: psnr
+visual: false     # 训练中可视化
+
+#dataset
+base_data_dir: /data/jzk/CT/data_cba
+dataset_name: ct3d
+resolution:
+ - 256
+ - 256
+ - 8
+train_batch_size: 2
+test_batch_size: 1
+num_workers: 8
+
+
