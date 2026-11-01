@@ -22,7 +22,6 @@ def build_model(cfg):
         model = JCT2D(cfg)
     elif model_name == 'jct2d_noise':
         model = JCT2D_noise(cfg)
-
     else:
         raise NotImplementedError(f"{model_name} is not implementde")
     

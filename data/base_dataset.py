@@ -30,11 +30,11 @@ class BaseDataset(Dataset):
         ])
 
         mask_transform = transforms.Compose([
-            transforms.Resize((resolution, resolution)),
+            transforms.Resize((resolution, resolution)), # 选用Resize 还是 ReSample？需要思考一下
             transforms.ToTensor(),
         ])
 
-        self.iamge_trasform = image_transform
+        self.image_transform = image_transform
         self.mask_transform = mask_transform
 
         self.rgb_subfolder = rgb_subfolder
@@ -86,7 +86,7 @@ class BaseDataset(Dataset):
     def __getitem__(self, idx):
         image = Image.open(self.image_filenames[idx]).convert("RGB")
         mask = Image.open(self.mask_filenames[idx]).convert("RGB")
-        image = self.iamge_trasform(image)
+        image = self.image_transform(image)
         mask = self.mask_transform(mask)
 
         # 只对训练数据集增强

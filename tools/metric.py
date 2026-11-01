@@ -6,6 +6,7 @@ from torchmetrics.segmentation import GeneralizedDiceScore, MeanIoU
 from torchmetrics.classification import Accuracy, Specificity, MulticlassSpecificityAtSensitivity
 from torchmetrics import MeanSquaredError
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
+import piq
 
 class SegmentationMetric:
 
@@ -25,16 +26,16 @@ class SegmentationMetric:
         for metric_name in self.metrics:
             results[metric_name] = self.accumulator[metric_name].compute().item()
         return results
-    
 
 class ReconstructionMetric:
 
     def __init__(self, metrics: List[str], device: torch.device):
         self.metrics = metrics
+        # 整幅 vs patch 的差值 — 若整幅 PSNR 明显低于 patch PSNR，说明 patch 边缘拼接有问题，GridAggregator 的 overlap_mode="average" 值得尝试 "hann"。
         self.accumulator: Dict[str, Metric] = {
             "mse": MeanSquaredError().to(device),
             'psnr': PeakSignalNoiseRatio(data_range=(-1.0,1.0)).to(device),
-            #'ssim': StructuralSimilarityIndexMeasure(data_range=1.0).to(device),
+            'ssim': StructuralSimilarityIndexMeasure(data_range=1.0).to(device),
         }
 
     def update(self, output: torch.Tensor, target: torch.Tensor) -> None:
@@ -49,7 +50,7 @@ class ReconstructionMetric:
 
 class ClassificationMetric:
     #以后改
-
+    pass
     def __init__(self, metrics: List[str], device: torch.device):
         self.metrics = metrics
         self.accumulator: Dict[str, Metric] = {
@@ -66,13 +67,41 @@ class ClassificationMetric:
         for metric_name in self.metrics:
             results[metric_name] = self.accumulator[metric_name].compute().item()
         return results
-    
+
+class AllMetrics:
+    def __init__(self, metrics: List[str], device: torch.device):
+        self.metrics = metrics
+
+        self.accumulator: Dict[str, Metric] = {
+            "mse": MeanSquaredError().to(device),
+            'psnr': PeakSignalNoiseRatio(data_range=(-1.0,1.0)).to(device),
+            'ssim': StructuralSimilarityIndexMeasure(data_range=1.0).to(device),
+            "dice": GeneralizedDiceScore(num_classes=2, weight_type="linear").to(device),
+            "miou": MeanIoU(num_classes=2).to(device),
+            # 下面这两个有待完善
+            'vif': None, 
+            'gmsd': piq.GMSDLoss().to(device), 
+        }
+
+    def update(self, output: torch.Tensor, target: torch.Tensor) -> None:
+        for metric_name in self.metrics:
+            print(f"Updating metric: {metric_name}")
+            self.accumulator[metric_name].update(output, target)
+
+    def compute(self) -> Dict[str, float]:
+        results = {}
+        for metric_name in self.metrics:
+            results[metric_name] = self.accumulator[metric_name].compute().item()
+        return results
+
 def build_metric(cfg, device):
     if cfg.task == 'seg':
         return SegmentationMetric(cfg.metrics, device)
     elif cfg.task == 'recon':
         return ReconstructionMetric(cfg.metrics, device)
-    
+    elif cfg.task == 'all':
+        return AllMetrics(cfg.metrics, device)
+
 
 class Visualization:
 
