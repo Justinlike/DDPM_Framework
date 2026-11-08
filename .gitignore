@@ -47,6 +47,7 @@ runs/
 checkpoints/
 checkpoint/
 output/
+outputs/
 *.log
 
 # ==========================================
