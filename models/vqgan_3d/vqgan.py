@@ -46,6 +46,10 @@ def vanilla_d_loss(logits_real, logits_fake):
 class VQGAN(pl.LightningModule):
     def __init__(self, cfg):
         super().__init__()
+        self.automatic_optimization = False
+        self._legacy_optimizer_steps = 0
+        if cfg.model.accumulate_grad_batches != 1:
+            raise ValueError("Manual VQGAN optimization currently requires accumulate_grad_batches=1")
         self.cfg = cfg
         self.embedding_dim = cfg.model.embedding_dim
         self.n_codes = cfg.model.n_codes
@@ -115,7 +119,7 @@ class VQGAN(pl.LightningModule):
         recon_loss = F.l1_loss(x_recon, x) * self.l1_weight
 
         # Selects one random 2D image from each 3D Image
-        frame_idx = torch.randint(0, T, [B]).cuda()
+        frame_idx = torch.randint(0, T, [B], device=x.device)
         frame_idx_selected = frame_idx.reshape(-1,
                                                1, 1, 1, 1).repeat(1, C, 1, H, W)
         frames = torch.gather(x, 2, frame_idx_selected).squeeze(2)
@@ -142,7 +146,7 @@ class VQGAN(pl.LightningModule):
             g_video_loss = -torch.mean(logits_video_fake)
             g_loss = self.image_gan_weight*g_image_loss + self.video_gan_weight*g_video_loss
             disc_factor = adopt_weight(
-                self.global_step, threshold=self.cfg.model.discriminator_iter_start)
+                self._legacy_optimizer_steps, threshold=self.cfg.model.discriminator_iter_start)
             aeloss = disc_factor * g_loss
 
             # GAN feature matching loss - tune features such that we get the same prediction result on the discriminator
@@ -198,7 +202,7 @@ class VQGAN(pl.LightningModule):
             d_image_loss = self.disc_loss(logits_image_real, logits_image_fake)
             d_video_loss = self.disc_loss(logits_video_real, logits_video_fake)
             disc_factor = adopt_weight(
-                self.global_step, threshold=self.cfg.model.discriminator_iter_start)
+                self._legacy_optimizer_steps, threshold=self.cfg.model.discriminator_iter_start)
             discloss = disc_factor * \
                 (self.image_gan_weight*d_image_loss +
                  self.video_gan_weight*d_video_loss)
@@ -223,23 +227,55 @@ class VQGAN(pl.LightningModule):
             frames, frames_recon) * self.perceptual_weight
         return recon_loss, x_recon, vq_output, perceptual_loss
 
-    def training_step(self, batch, batch_idx, optimizer_idx):
+    def on_save_checkpoint(self, checkpoint):
+        checkpoint['vqgan_legacy_optimizer_steps'] = self._legacy_optimizer_steps
+
+    def on_load_checkpoint(self, checkpoint):
+        # Old automatic multi-optimizer runs counted both optimizer steps.
+        self._legacy_optimizer_steps = checkpoint.get(
+            'vqgan_legacy_optimizer_steps', checkpoint.get('global_step', 0))
+        # The restored EMA buffers must not be replaced by the next batch.
+        self.codebook._need_init = False
+
+    def _manual_update(self, optimizer, loss):
+        self.manual_backward(loss)
+        clip_val = self.cfg.model.gradient_clip_val
+        if clip_val is not None and clip_val > 0:
+            self.clip_gradients(optimizer, gradient_clip_val=clip_val,
+                                gradient_clip_algorithm="norm")
+        optimizer.step()
+
+    def training_step(self, batch, batch_idx):
         x = batch['data']
-        if optimizer_idx == 0:
-            recon_loss, _, vq_output, aeloss, perceptual_loss, gan_feat_loss = self.forward(
-                x, optimizer_idx)
-            commitment_loss = vq_output['commitment_loss']
-            loss = recon_loss + commitment_loss + aeloss + perceptual_loss + gan_feat_loss
-        if optimizer_idx == 1:
-            discloss = self.forward(x, optimizer_idx)
-            loss = discloss
-        return loss
+        opt_ae, opt_disc = self.optimizers()
+        self.toggle_optimizer(opt_ae)
+        try:
+            opt_ae.zero_grad()
+            recon_loss, _, vq_output, aeloss, perceptual_loss, gan_feat_loss = self.forward(x, 0)
+            loss = recon_loss + vq_output['commitment_loss'] + aeloss + perceptual_loss + gan_feat_loss
+            self._manual_update(opt_ae, loss)
+        finally:
+            self.untoggle_optimizer(opt_ae)
+        self._legacy_optimizer_steps += 1
+
+        self.toggle_optimizer(opt_disc)
+        try:
+            opt_disc.zero_grad()
+            # Preserve the original post-generator-update reconstruction and EMA
+            # update, including during warmup. Fake inputs are detached in forward.
+            discloss = self.forward(x, 1)
+            if self._legacy_optimizer_steps >= self.cfg.model.discriminator_iter_start:
+                self._manual_update(opt_disc, discloss)
+        finally:
+            self.untoggle_optimizer(opt_disc)
+        self._legacy_optimizer_steps += 1
+        return loss.detach()
 
     def validation_step(self, batch, batch_idx):
         x = batch['data']  # TODO: batch['stft']
         recon_loss, _, vq_output, perceptual_loss = self.forward(x)
         self.log('val/recon_loss', recon_loss, prog_bar=True)
-        self.log('val/perceptual_loss', perceptual_loss, prog_bar=True)
+        self.log('val/perceptual_loss', perceptual_loss.mean(), prog_bar=True)
         self.log('val/perplexity', vq_output['perplexity'], prog_bar=True)
         self.log('val/commitment_loss',
                  vq_output['commitment_loss'], prog_bar=True)

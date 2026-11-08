@@ -34,7 +34,7 @@ model:
   auto_resume: true
   max_steps: -1
   max_epochs: -1
-  precision: 16
+  precision: "16-mixed"
   gradient_clip_val: 1.0
 
   # VQGAN architecture and losses (the upstream vq_gan_3d defaults).

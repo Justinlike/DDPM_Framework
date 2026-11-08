@@ -48,6 +48,12 @@ class Codebook(nn.Module):
         self.N.data.copy_(torch.ones(self.n_codes))
 
     def forward(self, z):
+        # Large 3D patch counts and squared distances can overflow FP16.
+        # Keep nearest-code search and EMA reductions in FP32 under AMP.
+        with torch.autocast(device_type=z.device.type, enabled=False):
+            return self._forward_fp32(z.float())
+
+    def _forward_fp32(self, z):
         # z: [b, c, t, h, w]
         if self._need_init and self.training:
             self._init_embeddings(z)

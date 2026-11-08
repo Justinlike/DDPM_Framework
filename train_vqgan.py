@@ -46,11 +46,11 @@ def _make_dataset(cfg: DictConfig, split: str, ) -> Dataset:
     val_dataset_0 = VQGAN_Dataset(
         root_dir="/data/jzk/CT/data_522",
         split="test",
-        modality="ccta",
+        modality="ncct",
         resolution=(512, 512, 64),
         queue_length=16,
         num_workers=0,
-        training=True,
+        training=False,
         normalization="m11"
     )
 
@@ -61,7 +61,7 @@ def _make_dataset(cfg: DictConfig, split: str, ) -> Dataset:
         resolution=(512, 512, 64),
         queue_length=16,
         num_workers=0,
-        training=True,
+        training=False,
         normalization="m11"
     )
 
@@ -86,9 +86,9 @@ def _make_dataloaders(cfg: DictConfig) -> tuple[DataLoader, DataLoader]:
 
     loader_kwargs = {
         "batch_size": cfg.model.batch_size,
-        "num_workers": cfg.model.num_workers,
+        "num_workers": 0,
         "pin_memory": torch.cuda.is_available(),
-        "persistent_workers": cfg.model.num_workers > 0,
+        "persistent_workers": False,
     }
 
     train_loader = DataLoader(
@@ -146,28 +146,21 @@ def run(cfg: DictConfig):
     # callbacks.append(VideoLogger(
     #     batch_frequency=1500, max_videos=4, clamp=True))
 
-    # load the most recent checkpoint file
-    base_dir = os.path.join(cfg.model.default_root_dir, 'lightning_logs')
-    if os.path.exists(base_dir):
-        log_folder = ckpt_file = ''
-        version_id_used = step_used = 0
-        for folder in os.listdir(base_dir):
-            version_id = int(folder.split('_')[1])
-            if version_id > version_id_used:
-                version_id_used = version_id
-                log_folder = folder
-        if len(log_folder) > 0:
-            ckpt_folder = os.path.join(base_dir, log_folder, 'checkpoints')
-            for fn in os.listdir(ckpt_folder):
-                if fn == 'latest_checkpoint.ckpt':
-                    ckpt_file = 'latest_checkpoint_prev.ckpt'
-                    os.rename(os.path.join(ckpt_folder, fn),
-                              os.path.join(ckpt_folder, ckpt_file))
-            if len(ckpt_file) > 0:
-                cfg.model.resume_from_checkpoint = os.path.join(
-                    ckpt_folder, ckpt_file)
-                print('will start from the recent ckpt %s' %
-                      cfg.model.resume_from_checkpoint)
+    # Prefer an explicit checkpoint; discover existing files without renaming them.
+    ckpt_path = cfg.model.get("resume_from_checkpoint")
+    base_dir = Path(cfg.model.default_root_dir) / 'lightning_logs'
+    if not ckpt_path and cfg.model.get("auto_resume", True) and base_dir.is_dir():
+        versions = sorted(
+            (p for p in base_dir.glob('version_*')
+             if p.is_dir() and p.name.removeprefix('version_').isdigit()),
+            key=lambda p: int(p.name.removeprefix('version_')), reverse=True)
+        for version in versions:
+            candidates = list((version / 'checkpoints').rglob('*.ckpt'))
+            if candidates:
+                ckpt_path = str(max(candidates, key=lambda p: p.stat().st_mtime))
+                break
+    if ckpt_path:
+        print(f'Resuming from checkpoint: {ckpt_path}')
 
     # GPU 配置
     num_gpus = cfg.model.gpus
@@ -181,18 +174,18 @@ def run(cfg: DictConfig):
         devices=devices,
         strategy=strategy,
 
-        accumulate_grad_batches=cfg.model.accumulate_grad_batches,
+        accumulate_grad_batches=1,
         default_root_dir=cfg.model.default_root_dir,
         callbacks=callbacks,
 
         max_steps=cfg.model.max_steps,
         max_epochs=cfg.model.max_epochs,
-        precision=cfg.model.precision,
-        gradient_clip_val=cfg.model.gradient_clip_val,
+        precision="16-mixed" if str(cfg.model.precision) == "16" else cfg.model.precision,
+        # Gradient clipping is performed by the manual optimization loop.
         
     )
         
-    trainer.fit(model, train_dataloader, val_dataloader, )
+    trainer.fit(model, train_dataloader, val_dataloader, ckpt_path=ckpt_path)
 
 
 if __name__ == '__main__':
