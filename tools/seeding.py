@@ -18,6 +18,7 @@
 # --------------------------------------------------------------------------
 
 
+import os
 import numpy as np
 import random
 import torch
@@ -28,10 +29,19 @@ def seed_all(seed: int = 0):
     """
     Set random seeds of all components.
     """
+    # random.seed(seed)
+    # np.random.seed(seed)
+    # torch.manual_seed(seed)
+    # torch.cuda.manual_seed_all(seed)
+
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
     random.seed(seed)
     np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
 
 
 def generate_seed_sequence(

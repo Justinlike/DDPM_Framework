@@ -18,7 +18,7 @@ class Trainer(Baser):
         super().__init__(args, model, loss_fn, **kwargs)
         self.model = model
         self.ema_model = ema_model
-        self.loss_fn = loss_fn
+        self.loss_fn = loss_fn # 好像没有用上过
         self.train_loader = train_loader
         self.valid_loader = valid_loader
         self.optimizer = optimizer
@@ -53,6 +53,7 @@ class Trainer(Baser):
 
         metrics = {}
         # PSNR: MAX, MSE: MIN
+        # 设置一个moniter，只通过moniter判断模型好坏。
         if self.cfg.compare == 'max':
             best_score = 0
         else:
@@ -62,6 +63,7 @@ class Trainer(Baser):
         for epoch in range(max_epoch):
             self.model.train()
             train_loss = 0.0
+            train_loss_count = 0
 
             if global_step >= self.cfg.max_train_steps:
                 break
@@ -90,14 +92,14 @@ class Trainer(Baser):
                     if not math.isfinite(loss.item()):
                         print(f"Loss is {loss}, stopping training")
                         sys.exit(1)
-
+    
                     # Gather the losses across all processes for logging (if we use distributed training).
                     # 多卡求平均
                     gathered_losses = self.accelerator.gather(loss.unsqueeze(0))
                     avg_loss = gathered_losses.mean().item()
                     train_loss += avg_loss
-
-                    # Backpropagate
+                    train_loss_count += 1
+                    # === Backpropagation ===
                     self.accelerator.backward(loss)
                     if self.accelerator.sync_gradients:
                         self.accelerator.clip_grad_norm_(list(self.model.parameters()), 1.0)
@@ -115,14 +117,13 @@ class Trainer(Baser):
                     progress_bar.update(1)
                     global_step += 1
 
-
-                    # EVALUATE the model on the validation set for save the best model checkpoints
+                    # === EVALUATE === the model on the validation set for save the best model checkpoints
                     #if self.accelerator.is_main_process:
                     if global_step > self.cfg.validation_start_steps and global_step % self.cfg.validation_steps == 0:
                         if self.cfg.use_ema:
                             self.accelerator.wait_for_everyone()
 
-                        metrics = self.evaluate(global_step)
+                        metrics = self.evaluate(global_step) # 内部执行self.model.eval(), 因此也要再次重启训练。
 
                         if self.cfg.use_ema:
                             self.accelerator.wait_for_everyone()
@@ -139,12 +140,13 @@ class Trainer(Baser):
                 logs = {"step_loss": loss.item(), # detach冗余，因为item取出的标量本身就不在计算图中了
                         "lr": self.lr_scheduler.get_last_lr()[0],
                         # train 和 step loss 不能用来选择模型，单步step是随机的，大小只取决于随机出来的t
-                        "train_loss": train_loss / self.cfg.gradient_accumulation_steps} 
+                        "train_loss": train_loss / max(1, train_loss_count)} 
                 progress_bar.set_postfix({**logs, **metrics})
 
                 # self.accelerator.log(logs, step) 会导致覆盖
                 self.accelerator.log(logs, step=global_step)
 
+            # === 保存模型频率 ===
             if global_step % self.cfg.save_step_freq == 0 and self.accelerator.is_main_process:
                 save_model(self.cfg, epoch, self.model, self.accelerator, self.optimizer, loss_scaler=self.lr_scheduler, epoch_name="last")
 
@@ -200,6 +202,7 @@ class Trainer(Baser):
             images.save(os.path.join(self.cfg.output_dir, self.cfg.job_name, "visualization", f"step-{step:06d}.jpg"))
         results = metrics.compute()
         self.accelerator.log(results, step=step)
+        self.model.train()
         return results
     
 

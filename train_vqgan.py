@@ -1,14 +1,109 @@
 "Adapted from https://github.com/SongweiGe/TATS"
 
 import os
+from typing import Any
+from pathlib import Path
+
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
+import torch
 from models.vqgan_3d import VQGAN
 # from train.callbacks import ImageLogger, VideoLogger
 from data.build import build_loader
 import hydra
+from data.build import dataset_type_dict
 from omegaconf import DictConfig, open_dict
+# import wandb
+
+# ========================== 先对CT3D类包装， 使其输出符合MedicalDiffusion的batch格式 ==========================
+class VQGANDatasetAdapter(Dataset):
+    """Convert this project's TorchIO samples to MedicalDiffusion batches."""
+
+    def __init__(self, dataset: Dataset, image_key: str, normalization: str):
+        # CT3D stores the actual patch dataset in a TorchIO Queue. Using the
+        # queue directly also preserves samples_per_volume in __len__.
+        self.dataset = getattr(dataset, "queue_set", dataset)
+        self.image_key = image_key
+        self.normalization = normalization
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
+        sample = self.dataset[index]
+        image: Any = sample[self.image_key]
+        image = image.data if hasattr(image, "data") else image
+        image = torch.as_tensor(image).float()
+
+        if image.ndim != 4:
+            raise ValueError(
+                f"Expected a (C, H, W, D) CT patch, got shape {tuple(image.shape)}"
+            )
+
+        # TorchIO: (C, H, W, D); MedicalDiffusion: (C, T, H, W).
+        image = image.permute(0, 3, 1, 2).contiguous()
+
+        if self.normalization == "zero_one_to_minus_one":
+            image = image.mul(2.0).sub(1.0)
+        elif self.normalization != "none":
+            raise ValueError(f"Unknown dataset normalization: {self.normalization}")
+
+        return {"data": image}
+
+
+def _make_dataset(cfg: DictConfig, split: str, training: bool) -> Dataset:
+    try:
+        dataset_class = dataset_type_dict[cfg.dataset.type]
+    except KeyError as exc:
+        available = ", ".join(sorted(dataset_type_dict))
+        raise ValueError(
+            f"Unknown dataset type '{cfg.dataset.type}'. Available: {available}"
+        ) from exc
+
+    dataset = dataset_class(
+        dataset_dir=cfg.dataset.root_dir,
+        split=split,
+        resolution=tuple(cfg.dataset.resolution),
+        seed=cfg.model.seed,
+        queue_length=cfg.dataset.queue_length,
+        samples_per_volume=cfg.dataset.samples_per_volume,
+        shuffle_subjects=training,
+        shuffle_patches=training,
+    )
+    return VQGANDatasetAdapter(
+        dataset,
+        image_key=cfg.dataset.image_key,
+        normalization=cfg.dataset.normalization,
+    )
+
+
+def _make_dataloaders(cfg: DictConfig) -> tuple[DataLoader, DataLoader]:
+    train_dataset = _make_dataset(cfg, cfg.dataset.train_split, training=True)
+    val_dataset = _make_dataset(cfg, cfg.dataset.val_split, training=False)
+    loader_kwargs = {
+        "batch_size": cfg.model.batch_size,
+        "num_workers": cfg.model.num_workers,
+        "pin_memory": torch.cuda.is_available(),
+        "persistent_workers": cfg.model.num_workers > 0,
+    }
+    train_loader = DataLoader(
+        train_dataset, shuffle=True, drop_last=True, **loader_kwargs
+    )
+    val_loader = DataLoader(val_dataset, shuffle=False, **loader_kwargs)
+    return train_loader, val_loader
+
+
+def _latest_checkpoint(root_dir: str) -> str | None:
+    """Return the newest Lightning checkpoint without renaming user files."""
+    checkpoint_root = Path(root_dir) / "lightning_logs"
+    if not checkpoint_root.exists():
+        return None
+    checkpoints = list(checkpoint_root.glob("version_*/checkpoints/*.ckpt"))
+    if not checkpoints:
+        return None
+    return str(max(checkpoints, key=lambda path: path.stat().st_mtime))
+
 
 @hydra.main(config_path='../config', config_name='base_cfg', version_base=None)
 def run(cfg: DictConfig):
@@ -18,14 +113,14 @@ def run(cfg: DictConfig):
     train_dataset, train_dataloader, val_dataset, val_dataloader, test_dataset, test_dataloader = build_loader(cfg)
 
     # automatically adjust learning rate
-    bs, base_lr, ngpu, accumulate = cfg.model.batch_size, cfg.model.lr, cfg.model.gpus, cfg.model.accumulate_grad_batches
+    batch_size, base_lr, ngpu, accumulate = cfg.model.batch_size, cfg.model.lr, cfg.model.gpus, cfg.model.accumulate_grad_batches
 
     with open_dict(cfg):
-        cfg.model.lr = accumulate * (ngpu/8.) * (bs/4.) * base_lr
+        cfg.model.lr = accumulate * (ngpu/8.) * (batch_size/4.) * base_lr
         cfg.model.default_root_dir = os.path.join(
             cfg.model.default_root_dir, cfg.dataset.name, cfg.model.default_root_dir_postfix)
     print("Setting learning rate to {:.2e} = {} (accumulate_grad_batches) * {} (num_gpus/8) * {} (batchsize/4) * {:.2e} (base_lr)".format(
-        cfg.model.lr, accumulate, ngpu/8, bs/4, base_lr))
+        cfg.model.lr, accumulate, ngpu/8, batch_size/4, base_lr))
 
     model = VQGAN(cfg)
 

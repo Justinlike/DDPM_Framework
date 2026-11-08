@@ -8,15 +8,15 @@ import torch.nn.functional as F
 from .difff import MyMaisiEncoder
 from monai.apps.generation.maisi.networks.autoencoderkl_maisi import AutoencoderKlMaisi
 from monai.apps.generation.maisi.networks.diffusion_model_unet_maisi import DiffusionModelUNetMaisi
-
+import time
 
 class JCT(nn.Module):
-    def __init__(self, config, num_timesteps=50):
+    def __init__(self, config, model=None, num_timesteps=50, method = "heun"):
         super().__init__()
 
         self.num_timesteps = num_timesteps
     
-        self.unet = DiffusionModelUNetMaisi(**config["diffusion_unet_def"])
+        self.unet = model if model is not None else DiffusionModelUNetMaisi(**config["diffusion_unet_def"])
 
         # a = torch.load('/mnt/sda1/lhw/project/CT/checkpoint/diffusion_unet.pt', weights_only=False)
         # self.unet.load_state_dict(a, strict=False)
@@ -27,7 +27,7 @@ class JCT(nn.Module):
         self.P_mean = 0
         self.noise_scale = 1.0
         self.t_eps = 5e-2
-        self.method = "heun"
+        self.method = method
 
     
     def forward(self, x, mask=None, **kwargs):
@@ -41,7 +41,7 @@ class JCT(nn.Module):
         return torch.sigmoid(z)
 
     def predict(self, x, mask, **kwargs):
-
+        
         t = self.sample_t(x.size(0), device=x.device).view(-1, *([1] * (x.ndim - 1)))
 
         # here is ncct
@@ -141,7 +141,7 @@ class JCT(nn.Module):
             z = stepper(z, t, t_next)
         # last step euler
         z = self._euler_step(z, timesteps[-2], timesteps[-1])
-
+        # 对隐空间输出限制为 [-1, 1]
         z = z.clamp(-1.0, 1.0)
 
         return {'predicted': z}
@@ -157,12 +157,18 @@ class JCT(nn.Module):
     
     @torch.no_grad()
     def _euler_step(self, z, t, t_next):
+        # about 0.4s
+        # time_begin = time.time()
         v_pred = self._forward_sample(z, t)
         z_next = z + (t_next - t) * v_pred
+        time_end = time.time()
+        # print(f"Time taken for Euler step: {time_end - time_begin:.4f} seconds")
         return z_next
 
     @torch.no_grad()
     def _heun_step(self, z, t, t_next):
+        # about 0.8s
+        # time_begin = time.time()
         v_pred_t = self._forward_sample(z, t)
 
         z_next_euler = z + (t_next - t) * v_pred_t
@@ -170,5 +176,7 @@ class JCT(nn.Module):
 
         v_pred = 0.5 * (v_pred_t + v_pred_t_next)
         z_next = z + (t_next - t) * v_pred
+        # time_end = time.time()
+        # print(f"Time taken for Heun step: {time_end - time_begin:.4f} seconds")
         return z_next
 

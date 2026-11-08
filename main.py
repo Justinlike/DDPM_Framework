@@ -53,7 +53,7 @@ def setup_directories(base_output: str, job_name: str) -> Dict[str, str]:
     dirs = {
         "run": out_run,
         "ckpt": os.path.join(out_run, "checkpoint"),
-        "tb": os.path.join(out_run, "tensorboard"),
+        "wandb": os.path.join(out_run, "wandb"),
         "vis": os.path.join(out_run, "visualization"),
     }
     return dirs
@@ -61,20 +61,14 @@ def setup_directories(base_output: str, job_name: str) -> Dict[str, str]:
 def main():
     args = parse_args()
     cfg = OmegaConf.load(args.config)
+    # 设置随机种子
+    seed_all(cfg.seed)
 
     # create output directories
     dirs = setup_directories(cfg.output_dir, cfg.job_name)
 
-    # define what tracker to use for logging, can be "wandb", "tensorboard", or "all"
-    report_to = cfg.report_to
-    if report_to == "all":
-        trackers = ["wandb", "tensorboard"]
-    elif report_to == "wandb":
-        trackers = ["wandb"]
-    elif report_to == "tensorboard":
-        trackers = ["tensorboard"]
-    else:
-        raise ValueError(f"Invalid tracker specified: {report_to}. Choose from 'wandb', 'tensorboard', or 'all'.")
+    # define what tracker to use for logging, we utilize wandb for tracking experiments in time
+    trackers = ["wandb"]
 
     # initialize accelerator
     accelerator = Accelerator(
@@ -83,7 +77,7 @@ def main():
         mixed_precision = cfg.mixed_precision,
         log_with = trackers,
         # save and log paths
-        project_config = ProjectConfiguration(project_dir = dirs["run"], logging_dir = dirs["tb"]),
+        project_config = ProjectConfiguration(project_dir = dirs["run"], logging_dir = dirs["wandb"]),
     )
 
     # config the logging 
@@ -101,7 +95,7 @@ def main():
         init_kwargs = {}
         if "wandb" in trackers:
             init_kwargs["wandb"] = {
-                "name": cfg.get("wandb_run_name") or cfg.job_name,
+                "name": cfg.job_name,
                 "entity": cfg.get("wandb_entity", None),
                 "config": OmegaConf.to_container(cfg, resolve=True),
                 "dir": dirs["run"],
@@ -151,7 +145,8 @@ def main():
     # -------------------- Optimizer & loss & LR scheduler --------------------
     optimizer = build_optimizer(model, cfg)
 
-    loss_fn = build_criterion(cfg)
+    # in, return None
+    loss_fn = build_criterion(cfg) 
 
     lr_scheduler = get_scheduler(
         name = cfg.lr_scheduler,

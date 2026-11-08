@@ -8,19 +8,21 @@ class Baser():
         self.args = args
         self.model = model
         self.criterion = loss_fn
+        self.model_range = kwaegs.get("model_range", "m11")  # 模型输出范围，默认 [-1, 1]
 
     def forward(self, samples, require_grad=True, **kwargs):
+        # 将这里对数据集预处理的功能全都移到dataset中。
         # imgs = samples['imgs'][tio.DATA].cuda(non_blocking=True)
         # #imgs = imgs * 2.0 - 1.0
         # labels=samples['labels'][tio.DATA].cuda(non_blocking=True)
         #labels = labels * 2.0 - 1.0
         try:
             imgs = samples['imgs'].cuda(non_blocking=True) # 遇到 TorchIO Image 对象报错，进入except
-            #imgs = (imgs/255) * 2.0 - 1.0
-            imgs = imgs * 2.0 - 1.0
             labels=samples['labels'].cuda(non_blocking=True)
-            #imgs = (labels/255) * 2.0 - 1.0
-            labels = labels * 2.0 - 1.0
+
+            if self.model_range == "m11":
+                imgs = imgs * 2.0 - 1.0
+                labels = labels * 2.0 - 1.0
             #print(imgs.shape, imgs.max(), imgs.min())
             #print(imgs.max(), imgs.min(), labels.max(), labels.min())
         except:
@@ -28,11 +30,11 @@ class Baser():
             #print(imgs.shape, '/?????????', imgs.max(), imgs.min())
             # 去掉 rearange 因为导致了维度问题
             # imgs = rearrange(imgs, 'b c h w z -> (b z) c h w') 
-            imgs = imgs * 2.0 - 1.0
-            #imgs = imgs * 2.0 - 1.0
             labels=samples['labels'][tio.DATA].unsqueeze(0).cuda(non_blocking=True)
             labels = rearrange(labels, 'b c h w z -> (b z) c h w')
-            labels = labels * 2.0 - 1.0
+            if self.model_range == "m11":
+                imgs = imgs * 2.0 - 1.0
+                labels = labels * 2.0 - 1.0
 
             #return {'predicted': imgs.clamp(-10,10)}
 
@@ -53,6 +55,10 @@ class Baser():
         return self.criterion(output["predicted"], labels.to(output["predicted"].dtype))
 
     def postprocess(self, batch, output):
+        """
+        后处理: 将target限定为[-1, 1]
+        output已经在模型中(generate)被限制在[-1, 1]，所以不需要再处理。
+        """
         # predicteds = F.softmax(predicteds, dim=-1)
         # predicteds = torch.argmax(predicteds, dim=-1).detach().cpu()
         #predicteds = F.logsigmoid(predicteds).exp().detach().cpu()

@@ -116,6 +116,7 @@ class CT3D(BaseDataset):
             # /data/jzk/CT/data_cba/train/ncct/1079294.nii.gz /data/jzk/CT/data_cba/train/ccta/1079294.nii.gz 1079294
             subject = tio.Subject(imgs=tio.ScalarImage(ncct), labels=tio.ScalarImage(ccta), ID=file)
             self.subjects.append(subject)
+        
         trans = data_transform_3d()
 
         # load the augment and norm policy
@@ -135,7 +136,7 @@ class CT3D(BaseDataset):
         
     def __getitem__(self, index):
         return self.queue_set[index]
-
+    
 if __name__ == '__main__':
     dataset = CT2D(dataset_dir='/data/jzk/CT/data_cba', split="train", resolution=(512,512,2), seed=42)
 

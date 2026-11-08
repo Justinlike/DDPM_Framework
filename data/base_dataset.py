@@ -4,6 +4,7 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
+import torch.nn.functional as F
 
 class BaseDataset(Dataset):
     def __init__(

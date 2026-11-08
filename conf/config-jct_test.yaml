@@ -12,7 +12,7 @@ excluding_modules: null
 report_to: wandb          # 可选 "wandb" / "tensorboard" / "all"
 wandb_project: ddpm_ct
 wandb_entity: justinji_2545-shenzhen-university        # 你的 team 名，个人账号可留 null
-wandb_run_name: jct_test1        # 运行名，与 job_name 一致即可，方便在 wandb 上查看
+# wandb_run_name: jct_test1        # 运行名，与 job_name 一致即可，方便在 wandb 上查看
 
 #model
 model: jct
