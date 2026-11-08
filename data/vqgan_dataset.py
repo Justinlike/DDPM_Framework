@@ -1,13 +1,27 @@
 import os
-from os import path
-from torch.utils.data import Dataset
-import nibabel as nib
+from numbers import Integral
 import torch
 import torchio as tio
 from torchio import transforms as T
 from torchio.data import UniformSampler
-from einops import rearrange
 from data.base_dataset import BaseDataset
+
+class PadToMinimumSize(tio.Transform):
+    """Pad undersized axes without cropping larger volumes before sampling."""
+
+    def __init__(self, minimum_size):
+        super().__init__()
+        self.minimum_size = tuple(minimum_size)
+
+    def apply_transform(self, subject):
+        padding = []
+        for size, minimum in zip(subject.spatial_shape, self.minimum_size):
+            missing = max(0, minimum - size)
+            padding.extend((missing // 2, missing - missing // 2))
+        if any(padding):
+            # Applied after normalization: -1 is the background intensity.
+            subject = tio.Pad(tuple(padding), padding_mode=-1)(subject)
+        return subject
 
 def data_transform_3d_m11():
     # define the [-1, 1] normalization transform and maybe we need a cut off range.
@@ -16,6 +30,8 @@ def data_transform_3d_m11():
         # image.clamp(-1000, 1000)
         max =  image.max()
         min = image.min()
+        if max == min:
+            return torch.full_like(image, -1)
         return (image - min) / (max - min) * 2.0 - 1.0
 
     data_transform = {
@@ -34,6 +50,11 @@ def data_transform_3d_m11():
     return data_transform
 
 class VQGAN_Dataset(BaseDataset):
+    """Sample 3D patches: resolution is (H, W, D), output is (C, D, H, W).
+
+    The inherited PIL transforms are unused. Volumes keep their voxel spacing;
+    undersized axes are padded, and larger axes are randomly sampled.
+    """
     def __init__(
             self, 
             root_dir: str,
@@ -47,15 +68,26 @@ class VQGAN_Dataset(BaseDataset):
             normalization: str = "m11",
             **kwargs
         ) -> None:
+        if (not isinstance(resolution, (tuple, list)) or len(resolution) != 3
+                or any(isinstance(size, bool) or not isinstance(size, Integral)
+                       or size <= 0 for size in resolution)):
+            raise ValueError("resolution must contain three positive integers (H, W, D)")
+        if normalization != "m11":
+            raise ValueError("VQGAN_Dataset currently supports only normalization='m11'")
+        if split not in ("train", "val", "test"):
+            raise ValueError(f"Unsupported split: {split}")
         kwargs["split"] = split
         kwargs["dataset_dir"] = os.path.join(root_dir, split)
         super().__init__(
-            rgb_subfolder="ncct",
+            rgb_subfolder=modality,
             mask_subfolder="ccta",
             rgb_name_mode=".nii.gz",
             mask_name_mode=".nii.gz",
             **kwargs, 
         )
+        # Do not pass the 3D patch size to BaseDataset's 2D Resize.
+        self.patch_size = tuple(int(size) for size in resolution)
+        self.resolution = self.patch_size
         self.data_dir = os.path.join(root_dir, split, modality)
 
         # 发现有预处理的问题，不是所有的图像都是大于 [512, 512, 64]的
@@ -85,13 +117,16 @@ class VQGAN_Dataset(BaseDataset):
         print(f"Loaded {len(self.subjects)} subjects from {self.data_dir}")
         trans = data_transform_3d_m11()
 
-        self.dataset = tio.SubjectsDataset(self.subjects, transform=trans[split])
+        self.dataset = tio.SubjectsDataset(
+            self.subjects,
+            transform=T.Compose([trans[split], PadToMinimumSize(self.patch_size)]),
+        )
 
         self.queue = tio.Queue(
             subjects_dataset=self.dataset,
             max_length=queue_length,
             samples_per_volume=samples_per_volume,
-            sampler=UniformSampler(tuple(resolution)),
+            sampler=UniformSampler(self.patch_size),
             num_workers=num_workers,
             shuffle_subjects=training,
             shuffle_patches=training,
@@ -101,6 +136,9 @@ class VQGAN_Dataset(BaseDataset):
         return len(self.queue)
 
     def __getitem__(self, index):
+        # Queue ignores indices, so enforce the Dataset iteration boundary here.
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
         image = self.queue[index]["data"].data.float()
         # TorchIO uses (C, H, W, D); VQGAN expects (C, T, H, W).
         image = image.permute(0, 3, 1, 2).contiguous()
