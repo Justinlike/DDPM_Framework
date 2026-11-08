@@ -7,6 +7,7 @@ import torchio as tio
 from torchio import transforms as T
 from torchio.data import UniformSampler
 from einops import rearrange
+from data.base_dataset import BaseDataset
 
 def data_transform_3d_m11():
     # define the [-1, 1] normalization transform and maybe we need a cut off range.
@@ -32,8 +33,7 @@ def data_transform_3d_m11():
 
     return data_transform
 
-
-class VQGAN_Dataset(Dataset):
+class VQGAN_Dataset(BaseDataset):
     def __init__(
             self, 
             root_dir: str,
@@ -45,8 +45,17 @@ class VQGAN_Dataset(Dataset):
             num_workers: int = 8,
             training: bool = False,
             normalization: str = "m11",
+            **kwargs
         ) -> None:
-        super().__init__()
+        kwargs["split"] = split
+        kwargs["dataset_dir"] = os.path.join(root_dir, split)
+        super().__init__(
+            rgb_subfolder="ncct",
+            mask_subfolder="ccta",
+            rgb_name_mode=".nii.gz",
+            mask_name_mode=".nii.gz",
+            **kwargs, 
+        )
         self.data_dir = os.path.join(root_dir, split, modality)
 
         # 发现有预处理的问题，不是所有的图像都是大于 [512, 512, 64]的
@@ -97,10 +106,6 @@ class VQGAN_Dataset(Dataset):
         image = image.permute(0, 3, 1, 2).contiguous()
         return {"data": image}
 
-
-
-
-
 if __name__ == "__main__":
     dataset = VQGAN_Dataset(
         root_dir="/data/jzk/CT/data_522",
@@ -114,4 +119,4 @@ if __name__ == "__main__":
     )
     print(f"Dataset length: {len(dataset)}")
     for i in dataset:
-        print(i["data"].shape, i['imgs'].data.max, i['imgs'].data.min)  # Should print (C, T, H, W)
+        print(i["data"].shape, i['data'].data.max(), i['data'].data.min())  # Should print (C, T, H, W)
