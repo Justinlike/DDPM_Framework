@@ -1,0 +1,57 @@
+dataset:
+  name: CT3D
+  type: ct3d
+  root_dir: /data/jzk/CT/data_522
+  train_split: train
+  val_split: test
+  image_key: imgs
+  image_channels: 1
+  resolution:
+  - 512
+  - 512
+  - 8
+  queue_length: 16
+  samples_per_volume: 16
+  normalization: zero_one_to_minus_one
+model:
+  seed: 1234
+  batch_size: 1
+  num_workers: 16
+  gpus: 1
+  accumulate_grad_batches: 1
+  scale_lr: true
+  default_root_dir: outputs/vq_gan
+  default_root_dir_postfix: ct3d
+  resume_from_checkpoint: null
+  auto_resume: true
+  max_steps: -1
+  max_epochs: -1
+  precision: 16
+  gradient_clip_val: 1.0
+  embedding_dim: 256
+  n_codes: 2048
+  n_hiddens: 240
+  lr: 0.0003
+  downsample:
+  - 4
+  - 4
+  - 4
+  disc_channels: 64
+  disc_layers: 3
+  discriminator_iter_start: 50000
+  disc_loss_type: hinge
+  image_gan_weight: 1.0
+  video_gan_weight: 1.0
+  l1_weight: 4.0
+  gan_feat_weight: 0.0
+  perceptual_weight: 0.0
+  i3d_feat: false
+  restart_thres: 1.0
+  no_random_restart: false
+  norm_type: group
+  padding_type: replicate
+  num_groups: 32
+checkpoint:
+  monitor: val/recon_loss
+  save_top_k: 3
+  every_n_train_steps: 3000

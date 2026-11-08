@@ -9,8 +9,6 @@ import numpy as np
 dataset_type_dict: dict[str, type[BaseDataset]] = {
     "ct": CT2D,
     "ct3d": CT3D,
-    # 在思考，是把vqgan写到这里，还是写到训练文本
-    # "vagan_data": VQGAN_Dataset,
 }
 
 def build_loader(cfg):

@@ -8,9 +8,8 @@ from torchio.data import UniformSampler
 from einops import rearrange
 
 def data_transform_3d():
-    normalization = tio.ZNormalization()
-
     # define the min-max normalization transform
+    # [-1, 1] transformation achieved in Baser class.
     def custom_standardize(image):
         max = image.max()
         min = image.min()
@@ -101,6 +100,8 @@ class CT3D(BaseDataset):
         dataset_dir = kwargs.get("dataset_dir")
         split = kwargs.get("split")
         kwargs["dataset_dir"] = os.path.join(dataset_dir, split)
+        # 继承BaseDataset只起到加载数据集的作用，主要是获取ncct和ccta的路径，不对数据处理
+        # 
         super().__init__(
             rgb_subfolder="ncct",
             mask_subfolder="ccta",
@@ -127,7 +128,7 @@ class CT3D(BaseDataset):
             subjects_dataset=self.dataset,
             max_length=queue_length,                # 队列中最多缓存的patch数
             samples_per_volume=samples_per_volume,  # 抽取patch的数量
-            sampler=UniformSampler(resolution_3d),  # 抽取patch的分辨率
+            sampler=UniformSampler(resolution_3d),  # 抽取patch的分辨率，以供最后拼回去
             # num_workers=num_workers,
             shuffle_subjects=shuffle_subjects,
             shuffle_patches=shuffle_patches
@@ -138,7 +139,7 @@ class CT3D(BaseDataset):
         return self.queue_set[index]
     
 if __name__ == '__main__':
-    dataset = CT2D(dataset_dir='/data/jzk/CT/data_cba', split="train", resolution=(512,512,2), seed=42)
+    dataset = CT3D(dataset_dir='/data/jzk/CT/data_cba', split="train", resolution=(512,512,2), seed=42)
 
     for i in dataset:
         #x = i['imgs'].data
@@ -149,4 +150,4 @@ if __name__ == '__main__':
 
         # 2D
         # [2, 1, 512, 512]
-        print(i['imgs'].data.shape, i['imgs'].data.max, i['imgs'].data.min)
+        print(i['imgs'].data.shape, i['imgs'].data.max(), i['imgs'].data.min())
