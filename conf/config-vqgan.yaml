@@ -28,7 +28,7 @@ model:
   gpus: 1
   accumulate_grad_batches: 1
   scale_lr: true
-  default_root_dir: outputs/vq_gan
+  default_root_dir: output/vq_gan
   default_root_dir_postfix: ct3d
   resume_from_checkpoint: null
   auto_resume: true
