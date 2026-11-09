@@ -16,7 +16,6 @@ from .vqgan_tools import shift_dim, adopt_weight, comp_getattr
 from .lpips import LPIPS
 from .codebook import Codebook
 
-
 def silu(x):
     return x*torch.sigmoid(x)
 
