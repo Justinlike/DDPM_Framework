@@ -9,6 +9,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from torch.utils.data import DataLoader, Dataset, ConcatDataset
 import torch
 from models.vqgan_3d.moniter_vqgan import MoniterVQGAN as VQGAN
+# from models.vqgan_3d.vqgan import VQGAN
 from models.vqgan_3d.vqgan_callbacks import ImageLogger, VideoLogger
 from data.build import build_loader
 import hydra
