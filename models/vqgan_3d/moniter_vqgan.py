@@ -5,6 +5,8 @@ are monitored. Set VQGAN_MEMORY_BATCHES=0 to disable, or another nonnegative
 integer to change the count. Each process prints its own GPU measurements.
 Numbers include tensors retained by earlier stages; stage peaks are NOT additive.
 Peak counters are reset per stage, so do not combine with a whole-step peak meter.
+Decoder is monitored at final_block, each up/res1/res2, and conv_last rather
+than at its outer boundary. This avoids nested resets and identifies OOM stages.
 """
 
 import os
@@ -70,16 +72,37 @@ class MoniterVQGAN(VQGAN):
         else:
             self._end_memory(name, before)
 
+    def _memory_modules(self):
+        # Never monitor both a module and its children: their peak resets clash.
+        for name in ("encoder", "pre_vq_conv", "codebook", "post_vq_conv",
+                     "image_discriminator", "video_discriminator",
+                     "perceptual_model"):
+            yield name, getattr(self, name)
+        yield "decoder.final_block", self.decoder.final_block
+        for index, block in enumerate(self.decoder.conv_blocks):
+            for name in ("up", "res1", "res2"):
+                yield f"decoder.conv_blocks.{index}.{name}", getattr(block, name)
+        yield "decoder.conv_last", self.decoder.conv_last
+
+    @staticmethod
+    def _tensor_description(value):
+        # Store metadata only, never retain tensor references for diagnostics.
+        if isinstance(value, torch.Tensor):
+            return f"shape={tuple(value.shape)} dtype={value.dtype} device={value.device}"
+        return type(value).__name__
+
     def _install_memory_hooks(self):
         handles = []
-        # Only disjoint top-level modules: nested peak resets invalidate readings.
-        for name in ("encoder", "pre_vq_conv", "codebook", "post_vq_conv",
-                     "decoder", "image_discriminator", "video_discriminator",
-                     "perceptual_model"):
-            module = getattr(self, name)
+        for name, module in self._memory_modules():
             state = {}
 
-            def before_hook(module, inputs, state=state):
+            def before_hook(module, inputs, state=state, name=name):
+                description = self._tensor_description(inputs[0]) if inputs else "no input"
+                print(
+                    f"[VQGAN memory rank={self.global_rank} device={self._memory_device} "
+                    f"batch={self._memory_batch_idx} phase={self._memory_phase}] "
+                    f"{name} status=enter input({description})", flush=True,
+                )
                 state["before"] = self._begin_memory()
 
             def after_hook(module, inputs, output, state=state, name=name):
@@ -92,6 +115,9 @@ class MoniterVQGAN(VQGAN):
                             pass
                     else:
                         self._end_memory(name, before)
+                        if isinstance(output, torch.Tensor):
+                            print(f"[VQGAN memory] {name} "
+                                  f"output({self._tensor_description(output)})", flush=True)
 
             handles.append(module.register_forward_pre_hook(before_hook))
             handles.append(module.register_forward_hook(after_hook, always_call=True))
