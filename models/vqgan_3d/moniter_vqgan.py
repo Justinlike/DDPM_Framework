@@ -11,15 +11,21 @@ Set VQGAN_MODEL_PARALLEL=1 when using DecoderParallelStrategy in train_vqgan.py.
 CUDA_VISIBLE_DEVICES selects physical GPUs; logical cuda:0 and cuda:1 are used.
 The original module forward/loss code is reused via differentiable routing hooks.
 No activation checkpointing is enabled.
+With VQGAN_MODEL_PARALLEL=1 VQGAN_DECODER_GPUS=3, split each residual block:
+res1 first half cuda:1, second half cuda:2; res2 first half cuda:0, second
+half cuda:2. Final output convolution runs on cuda:0. Defaults to 2 GPUs.
+Residual-half measurements cover all participating GPUs, without nested hooks.
 """
 
 import os
 from contextlib import contextmanager
+from types import MethodType
+import weakref
 
 import torch
 from pytorch_lightning.strategies import SingleDeviceStrategy
 
-from .vqgan import VQGAN
+from .vqgan import VQGAN, silu
 
 
 def model_parallel_enabled():
@@ -29,12 +35,47 @@ def model_parallel_enabled():
     return value == "1"
 
 
+def decoder_gpu_count():
+    value = os.environ.get("VQGAN_DECODER_GPUS", "2")
+    if value not in ("2", "3"):
+        raise ValueError("VQGAN_DECODER_GPUS must be 2 or 3")
+    return int(value)
+
+
+def _route_to_module_device(module, inputs):
+    return (inputs[0].to(next(module.parameters()).device), *inputs[1:])
+
+
+def _split_resblock_forward(block, x):
+    """Original ResBlock operations, with device copies at two boundaries.
+
+    Do not add dropout here: the original ResBlock.forward does not call it.
+    The weak owner reference avoids registering a model inside its own child.
+    """
+    owner = block._memory_owner()
+    first, second = block._split_devices
+    with owner._memory_stage(block._split_name + ".norm1_silu_conv1"):
+        x = x.to(first)
+        h = block.norm1(x)
+        h = silu(h)
+        h = block.conv1(h)
+    with owner._memory_stage(block._split_name + ".norm2_silu_conv2_add"):
+        h = h.to(second)
+        h = block.norm2(h)
+        h = silu(h)
+        h = block.conv2(h)
+        x = x.to(second)
+        if block.in_channels != block.out_channels:
+            x = block.conv_shortcut(x)
+        return x + h
+
+
 class DecoderParallelStrategy(SingleDeviceStrategy):
     """One process, two visible CUDA devices; not data parallelism."""
 
     def __init__(self):
-        if torch.cuda.device_count() < 2:
-            raise RuntimeError("VQGAN_MODEL_PARALLEL=1 requires two visible CUDA GPUs")
+        if torch.cuda.device_count() < decoder_gpu_count():
+            raise RuntimeError(f"Model parallel mode requires {decoder_gpu_count()} visible CUDA GPUs")
         super().__init__(device=torch.device("cuda:0"))
 
     def model_to_device(self):
@@ -64,6 +105,8 @@ class MoniterVQGAN(VQGAN):
         self._memory_batch_idx = None
         self._parallel_routes = []
         self._parallel_devices = None
+        self._split_decoder = False
+        self._parameter_devices = {}
 
     def place_decoder_on_second_gpu(self):
         # Placement happens before optimizer creation. No registered wrapper
@@ -79,15 +122,41 @@ class MoniterVQGAN(VQGAN):
             self.post_vq_conv.register_forward_pre_hook(self._route_to_decoder),
             self.decoder.register_forward_hook(self._route_to_root),
         ]
-        print("[VQGAN placement] cuda:0=Encoder/Codebook/losses/discriminators; "
-              "cuda:1=post_vq_conv/Decoder; single process", flush=True)
+        self._split_decoder = decoder_gpu_count() == 3
+        if self._split_decoder:
+            self._parallel_devices = (root, decoder_device, torch.device("cuda:2"))
+            for index, block in enumerate(self.decoder.conv_blocks):
+                # Spread four large convolution/normalization halves over 3 GPUs.
+                # GPU 0 already holds Encoder; GPU 1 holds the upsampling stage.
+                for name, device_ids in (("res1", (1, 2)), ("res2", (0, 2))):
+                    residual = getattr(block, name)
+                    first, second = (torch.device(f"cuda:{i}") for i in device_ids)
+                    residual.norm1.to(first)
+                    residual.conv1.to(first)
+                    residual.norm2.to(second)
+                    residual.conv2.to(second)
+                    if residual.in_channels != residual.out_channels:
+                        residual.conv_shortcut.to(second)
+                    residual._split_devices = (first, second)
+                    residual._split_name = f"decoder.conv_blocks.{index}.{name}"
+                    residual._memory_owner = weakref.ref(self)
+                    residual.forward = MethodType(_split_resblock_forward, residual)
+                    print(f"[VQGAN placement] {residual._split_name}: "
+                          f"norm1/conv1={first}, norm2/conv2/add={second}", flush=True)
+                self._parallel_routes.append(
+                    block.up.register_forward_pre_hook(_route_to_module_device))
+            self.decoder.conv_last.to(root)
+            self._parallel_routes.append(
+                self.decoder.conv_last.register_forward_pre_hook(_route_to_module_device))
+        self._parameter_devices = {name: p.device for name, p in self.named_parameters()}
+        print(f"[VQGAN placement] single process; GPUs={len(self._parallel_devices)}; "
+              "Encoder/Codebook/losses=cuda:0; post_vq_conv/upsampling=cuda:1", flush=True)
 
     def on_train_start(self):
         if self._parallel_devices is None:
             return
-        root, decoder_device = self._parallel_devices
         for name, parameter in self.named_parameters():
-            expected = decoder_device if name.startswith(("decoder.", "post_vq_conv.")) else root
+            expected = self._parameter_devices[name]
             if parameter.device != expected:
                 raise RuntimeError(f"Wrong placement: {name} on {parameter.device}, expected {expected}")
         for optimizer in self.optimizers(use_pl_optimizer=False):
@@ -155,7 +224,7 @@ class MoniterVQGAN(VQGAN):
             yield name, getattr(self, name)
         yield "decoder.final_block", self.decoder.final_block
         for index, block in enumerate(self.decoder.conv_blocks):
-            for name in ("up", "res1", "res2"):
+            for name in (("up",) if self._split_decoder else ("up", "res1", "res2")):
                 yield f"decoder.conv_blocks.{index}.{name}", getattr(block, name)
         yield "decoder.conv_last", self.decoder.conv_last
 
