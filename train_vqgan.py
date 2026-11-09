@@ -8,7 +8,9 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 from torch.utils.data import DataLoader, Dataset, ConcatDataset
 import torch
-from models.vqgan_3d.moniter_vqgan import MoniterVQGAN as VQGAN
+from models.vqgan_3d.moniter_vqgan import (
+    MoniterVQGAN as VQGAN, DecoderParallelStrategy, model_parallel_enabled,
+)
 # from models.vqgan_3d.vqgan import VQGAN
 from models.vqgan_3d.vqgan_callbacks import ImageLogger, VideoLogger
 from data.build import build_loader
@@ -120,11 +122,18 @@ def _make_dataloaders(cfg: DictConfig) -> tuple[DataLoader, DataLoader]:
 def run(cfg: DictConfig):
     pl.seed_everything(cfg.model.seed)
 
+    parallel = model_parallel_enabled()
+    parallel_strategy = DecoderParallelStrategy() if parallel else None
+
     # 接着写
     train_dataloader, val_dataloader = _make_dataloaders(cfg)
 
     # automatically adjust learning rate
     batch_size, base_lr, ngpu, accumulate = cfg.model.batch_size, cfg.model.lr, cfg.model.gpus, cfg.model.accumulate_grad_batches
+
+    if parallel:
+        # Model shards do not multiply the number of independently trained samples.
+        ngpu = 1
 
     with open_dict(cfg):
         cfg.model.lr = accumulate * (ngpu/8.) * (batch_size/4.) * base_lr
@@ -142,10 +151,11 @@ def run(cfg: DictConfig):
                      save_top_k=-1, filename='{epoch}-{step}-{train/recon_loss:.2f}'))
     callbacks.append(ModelCheckpoint(every_n_train_steps=10000, save_top_k=-1,
                      filename='{epoch}-{step}-10000-{train/recon_loss:.2f}'))
-    callbacks.append(ImageLogger(
-        batch_frequency=750, max_images=4, clamp=True))
-    callbacks.append(VideoLogger(
-        batch_frequency=1500, max_videos=4, clamp=True))
+    if cfg.model.get("media_logging", True):
+        callbacks.append(ImageLogger(
+            batch_frequency=750, max_images=4, clamp=True))
+        callbacks.append(VideoLogger(
+            batch_frequency=1500, max_videos=4, clamp=True))
 
     # Prefer an explicit checkpoint; discover existing files without renaming them.
     ckpt_path = cfg.model.get("resume_from_checkpoint")
@@ -169,6 +179,8 @@ def run(cfg: DictConfig):
     devices = num_gpus if accelerator == "gpu" else 1
     # 多 GPU 时使用 DDP
     strategy = "ddp" if devices > 1 else "auto"
+    if parallel:
+        accelerator, devices, strategy = "gpu", 1, parallel_strategy
 
     trainer = pl.Trainer(
         accelerator=accelerator,
@@ -179,6 +191,8 @@ def run(cfg: DictConfig):
         default_root_dir=cfg.model.default_root_dir,
         callbacks=callbacks,
 
+        limit_train_batches=cfg.model.get("limit_train_batches", 1.0),
+        limit_val_batches=cfg.model.get("limit_val_batches", 1.0),
         max_steps=cfg.model.max_steps,
         max_epochs=cfg.model.max_epochs,
         precision="16-mixed" if str(cfg.model.precision) == "16" else cfg.model.precision,
