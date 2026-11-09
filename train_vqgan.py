@@ -9,7 +9,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from torch.utils.data import DataLoader, Dataset, ConcatDataset
 import torch
 from models.vqgan_3d import VQGAN
-# from train.callbacks import ImageLogger, VideoLogger
+from models.vqgan_3d.vqgan_callbacks import ImageLogger, VideoLogger
 from data.build import build_loader
 import hydra
 from omegaconf import DictConfig, open_dict
@@ -25,7 +25,7 @@ def _make_dataset(cfg: DictConfig, split: str, ) -> Dataset:
         root_dir="/data/jzk/CT/data_522",
         split="train",
         modality="ncct",
-        resolution=(512, 512, 64),
+        resolution=tuple(cfg.dataset.resolution),
         queue_length=16,
         num_workers=0,
         training=True,
@@ -36,7 +36,7 @@ def _make_dataset(cfg: DictConfig, split: str, ) -> Dataset:
         root_dir="/data/jzk/CT/data_522",
         split="train",
         modality="ccta",
-        resolution=(512, 512, 64),
+        resolution=tuple(cfg.dataset.resolution),
         queue_length=16,
         num_workers=0,
         training=True,
@@ -47,7 +47,7 @@ def _make_dataset(cfg: DictConfig, split: str, ) -> Dataset:
         root_dir="/data/jzk/CT/data_522",
         split="test",
         modality="ncct",
-        resolution=(512, 512, 64),
+        resolution=tuple(cfg.dataset.resolution),
         queue_length=16,
         num_workers=0,
         training=False,
@@ -58,7 +58,7 @@ def _make_dataset(cfg: DictConfig, split: str, ) -> Dataset:
         root_dir="/data/jzk/CT/data_522",
         split="test",
         modality="ccta",
-        resolution=(512, 512, 64),
+        resolution=tuple(cfg.dataset.resolution),
         queue_length=16,
         num_workers=0,
         training=False,
@@ -141,10 +141,10 @@ def run(cfg: DictConfig):
                      save_top_k=-1, filename='{epoch}-{step}-{train/recon_loss:.2f}'))
     callbacks.append(ModelCheckpoint(every_n_train_steps=10000, save_top_k=-1,
                      filename='{epoch}-{step}-10000-{train/recon_loss:.2f}'))
-    # callbacks.append(ImageLogger(
-    #     batch_frequency=750, max_images=4, clamp=True))
-    # callbacks.append(VideoLogger(
-    #     batch_frequency=1500, max_videos=4, clamp=True))
+    callbacks.append(ImageLogger(
+        batch_frequency=750, max_images=4, clamp=True))
+    callbacks.append(VideoLogger(
+        batch_frequency=1500, max_videos=4, clamp=True))
 
     # Prefer an explicit checkpoint; discover existing files without renaming them.
     ckpt_path = cfg.model.get("resume_from_checkpoint")
