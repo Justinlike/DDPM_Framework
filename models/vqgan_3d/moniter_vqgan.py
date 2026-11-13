@@ -15,6 +15,10 @@ With VQGAN_MODEL_PARALLEL=1 VQGAN_DECODER_GPUS=3, split each residual block:
 res1 first half cuda:1, second half cuda:2; res2 first half cuda:0, second
 half cuda:2. Final output convolution runs on cuda:0. Defaults to 2 GPUs.
 Residual-half measurements cover all participating GPUs, without nested hooks.
+VQGAN_UPDATE_DIAGNOSTICS=10 (default) reports the first 10 attempted updates
+per optimizer per run: unscaled gradient finiteness, AMP scales, actual Adam
+step execution and state counters. Set to 0 to disable the synchronizing checks.
+These diagnostics do not change scaler decisions, gradients or optimizer state.
 """
 
 import os
@@ -107,6 +111,12 @@ class MoniterVQGAN(VQGAN):
         self._parallel_devices = None
         self._split_decoder = False
         self._parameter_devices = {}
+        self._update_diagnostic_limit = int(os.environ.get("VQGAN_UPDATE_DIAGNOSTICS", "10"))
+        if self._update_diagnostic_limit < 0:
+            raise ValueError("VQGAN_UPDATE_DIAGNOSTICS must be nonnegative")
+        self._update_diagnostic_counts = {}
+        self._diagnosing_update = False
+        self._loaded_checkpoint_summary = None
 
     def place_decoder_on_second_gpu(self):
         # Placement happens before optimizer creation. No registered wrapper
@@ -152,7 +162,30 @@ class MoniterVQGAN(VQGAN):
         print(f"[VQGAN placement] single process; GPUs={len(self._parallel_devices)}; "
               "Encoder/Codebook/losses=cuda:0; post_vq_conv/upsampling=cuda:1", flush=True)
 
+    def on_load_checkpoint(self, checkpoint):
+        super().on_load_checkpoint(checkpoint)
+        self._loaded_checkpoint_summary = {
+            "epoch": checkpoint.get("epoch"),
+            "global_step": checkpoint.get("global_step"),
+            "legacy_steps": self._legacy_optimizer_steps,
+        }
+
+    @staticmethod
+    def _adam_step_summary(optimizer):
+        steps = [float(state["step"].item()) for state in optimizer.state.values()
+                 if "step" in state]
+        return f"states={len(steps)},min={min(steps) if steps else 0:g},max={max(steps) if steps else 0:g}"
+
     def on_train_start(self):
+        if self._update_diagnostic_limit:
+            scaler = getattr(self.trainer.precision_plugin, "scaler", None)
+            print(f"[VQGAN restore] source={self._loaded_checkpoint_summary} "
+                  f"epoch={self.current_epoch} global_step={self.global_step} "
+                  f"legacy_steps={self._legacy_optimizer_steps} "
+                  f"codebook_need_init={self.codebook._need_init} "
+                  f"scale={scaler.get_scale() if scaler else None}", flush=True)
+            for label, optimizer in zip(("G", "D"), self.optimizers(use_pl_optimizer=False)):
+                print(f"[VQGAN restore] {label} Adam({self._adam_step_summary(optimizer)})", flush=True)
         if self._parallel_devices is None:
             return
         for name, parameter in self.named_parameters():
@@ -298,18 +331,65 @@ class MoniterVQGAN(VQGAN):
             self._memory_enabled = False
 
     def _manual_update(self, optimizer, loss):
-        with self._memory_stage("backward"):
-            self.manual_backward(loss)
-        # Lightning's precision plugin unscales before on_before_optimizer_step.
-        # Include clipping in this interval: nested peak resets would corrupt it.
-        with self._memory_stage("optimizer.step (including unscale/clip)"):
-            optimizer.step()
+        phase = self._memory_phase
+        count = self._update_diagnostic_counts.get(phase, 0)
+        diagnose = count < self._update_diagnostic_limit
+        self._update_diagnostic_counts[phase] = count + 1
+        self._diagnosing_update = diagnose
+        raw_optimizer = optimizer.optimizer
+        scaler = getattr(self.trainer.precision_plugin, "scaler", None)
+        scale_before = scaler.get_scale() if diagnose and scaler is not None else None
+        before_steps = self._adam_step_summary(raw_optimizer) if diagnose else None
+        executed = []
+        handle = None
+        if diagnose:
+            # This hook runs only if GradScaler actually calls the underlying Adam.
+            handle = raw_optimizer.register_step_post_hook(
+                lambda opt, args, kwargs: executed.append(True))
+            print(f"[VQGAN update] phase={phase} batch={self._memory_batch_idx} "
+                  f"loss_finite={bool(torch.isfinite(loss.detach()).all().item())}", flush=True)
+        try:
+            with self._memory_stage("backward"):
+                self.manual_backward(loss)
+            with self._memory_stage("optimizer.step (including unscale/clip)"):
+                optimizer.step()
+            if diagnose:
+                print(f"[VQGAN update] phase={phase} batch={self._memory_batch_idx} "
+                      f"adam_step_executed={bool(executed)} "
+                      f"scale_before={scale_before} "
+                      f"scale_after={scaler.get_scale() if scaler is not None else None} "
+                      f"adam_before=({before_steps}) "
+                      f"adam_after=({self._adam_step_summary(raw_optimizer)})", flush=True)
+        finally:
+            if handle is not None:
+                handle.remove()
+            self._diagnosing_update = False
 
     def on_before_optimizer_step(self, optimizer):
+        # Lightning invokes this AFTER unscale and BEFORE our clipping / Adam step.
+        parameters = [p for group in optimizer.param_groups for p in group["params"]]
+        if self._diagnosing_update:
+            names = {id(p): name for name, p in self.named_parameters()}
+            stats = {}
+            bad_names = []
+            for p in parameters:
+                key = str(p.device)
+                entry = stats.setdefault(key, {"with_grad": 0, "missing_grad": 0,
+                                               "nonfinite_grad_tensors": 0})
+                if p.grad is None:
+                    entry["missing_grad"] += 1
+                    continue
+                entry["with_grad"] += 1
+                if not bool(torch.isfinite(p.grad).all().item()):
+                    entry["nonfinite_grad_tensors"] += 1
+                    if len(bad_names) < 5:
+                        bad_names.append(names.get(id(p), "unknown"))
+            print(f"[VQGAN gradients] phase={self._memory_phase} "
+                  f"unscaled_before_clip={stats} first_nonfinite={bad_names}", flush=True)
         clip_val = self.cfg.model.gradient_clip_val
         if clip_val is not None and clip_val > 0:
-            # One global norm across BOTH devices, not a separate norm per GPU.
-            torch.nn.utils.clip_grad_norm_(
-                [p for group in optimizer.param_groups for p in group["params"]],
-                max_norm=clip_val,
-            )
+            # One global norm across all devices, after AMP unscaling.
+            norm = torch.nn.utils.clip_grad_norm_(parameters, max_norm=clip_val)
+            if self._diagnosing_update:
+                print(f"[VQGAN gradients] phase={self._memory_phase} "
+                      f"unscaled_global_norm_before_clip={float(norm.item())}", flush=True)
