@@ -12,7 +12,7 @@ dataset:
 
   # TorchIO samples patches as (H, W, D). train_vqgan.py converts them to
   # the VQGAN layout (C, T, H, W), so this becomes T=8, H=W=128.
-  resolution: [128, 128, 64] # 貌似没有用上
+  resolution: [512, 512, 64]
   queue_length: 16
   samples_per_volume: 16
 
@@ -25,7 +25,7 @@ model:
   batch_size: 1
   num_workers: 16
 
-  gpus: 1
+  gpus: 3
   accumulate_grad_batches: 1
   scale_lr: true
   default_root_dir: output/vq_gan
@@ -40,9 +40,9 @@ model:
   # VQGAN architecture and losses (the upstream vq_gan_3d defaults).
   embedding_dim: 256
   n_codes: 2048
-  n_hiddens: 240 # 240
+  n_hiddens: 32 # 240
   lr: 3.0e-4
-  downsample: [2, 2, 2]
+  downsample: [4, 4, 4]
   disc_channels: 64
   disc_layers: 3
   discriminator_iter_start: 50000

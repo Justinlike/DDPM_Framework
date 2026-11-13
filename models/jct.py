@@ -57,14 +57,18 @@ class JCT(nn.Module):
         v = (mask - z) / (1 - t).clamp_min(self.t_eps)
 
         #x_pred = self.net(z, t.flatten())
-        # print("x shape:", x.shape)
-        # print("mask shape:", mask.shape)
-        # print("z shape before UNet:", z.shape)
-        # print("t shape:", t.shape)
+        # print("x shape:", x.shape)              # x shape: torch.Size([1, 1, 512, 512, 8])
+        # print("mask shape:", mask.shape)        # mask shape: torch.Size([1, 1, 512, 512, 8])
+        # print("z shape before UNet:", z.shape)  # z shape before UNet: torch.Size([1, 1, 512, 512, 8])
+        # print("t shape:", t.shape)              # t shape: torch.Size([1, 1, 1, 1, 1])
+        # 有数据不对齐问题，我们实现的UNet要求输入[B, C, D, H, W]，而现在的输入是[B, C, H, W, D]，所以需要permute
+        z = z.permute(0, 1, 4, 2, 3).contiguous()  # (B, C, H, W, D) -> (B, C, D, H, W)
         x_pred = self.unet(z, t.flatten())
+        x_pred = x_pred.permute(0, 1, 3, 4, 2).contiguous()
         # v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
         #预测速度
         v_pred = x_pred
+        
 
         # l2 loss
         loss = (v - v_pred) ** 2

@@ -392,7 +392,8 @@ class UNet(nn.Module):
             bottleneck_attention=True,
             resample_2d=True,
             additive_skips=False,
-            decoder_device_thresh=0,
+            # means at decoder's 0 layer will be put in device 2
+            decoder_device_thresh=10,
             ):
         super().__init__()
 
@@ -640,10 +641,12 @@ class UNet(nn.Module):
             print(f"distributed UNet components to devices {self.device}")
 
         else:
+            # super().to(*args, **kwargs)
+            # if self.device is None:
+            #     p = next(self.parameters())
+            #     self.device = [p.device, p.device]
             super().to(*args, **kwargs)
-            if self.device is None:
-                p = next(self.parameters())
-                self.device = [p.device, p.device]
+            self.device = None
         
         return self
 
@@ -687,6 +690,8 @@ class UNet(nn.Module):
         return self.out(h)
 
 if __name__ == "__main__":
+    from torchprofile import profile_macs
+
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     x = torch.randn(1, 1, 8, 512, 512).to(device)

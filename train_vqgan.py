@@ -8,10 +8,10 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 from torch.utils.data import DataLoader, Dataset, ConcatDataset
 import torch
-from models.vqgan_3d.moniter_vqgan import (
-    MoniterVQGAN as VQGAN, DecoderParallelStrategy, model_parallel_enabled,
-)
-# from models.vqgan_3d.vqgan import VQGAN
+# from models.vqgan_3d.moniter_vqgan import (
+#     MoniterVQGAN as VQGAN, DecoderParallelStrategy, model_parallel_enabled,
+# )
+from models.vqgan_3d.vqgan import VQGAN
 from models.vqgan_3d.vqgan_callbacks import ImageLogger, VideoLogger
 from data.build import build_loader
 import hydra
@@ -122,8 +122,8 @@ def _make_dataloaders(cfg: DictConfig) -> tuple[DataLoader, DataLoader]:
 def run(cfg: DictConfig):
     pl.seed_everything(cfg.model.seed)
 
-    parallel = model_parallel_enabled()
-    parallel_strategy = DecoderParallelStrategy() if parallel else None
+    # parallel = model_parallel_enabled()
+    # parallel_strategy = DecoderParallelStrategy() if parallel else None
 
     # 接着写
     train_dataloader, val_dataloader = _make_dataloaders(cfg)
@@ -131,9 +131,9 @@ def run(cfg: DictConfig):
     # automatically adjust learning rate
     batch_size, base_lr, ngpu, accumulate = cfg.model.batch_size, cfg.model.lr, cfg.model.gpus, cfg.model.accumulate_grad_batches
 
-    if parallel:
-        # Model shards do not multiply the number of independently trained samples.
-        ngpu = 1
+    # if parallel:
+    #     # Model shards do not multiply the number of independently trained samples.
+    #     ngpu = 1
 
     with open_dict(cfg):
         cfg.model.lr = accumulate * (ngpu/8.) * (batch_size/4.) * base_lr
@@ -179,8 +179,8 @@ def run(cfg: DictConfig):
     devices = num_gpus if accelerator == "gpu" else 1
     # 多 GPU 时使用 DDP
     strategy = "ddp" if devices > 1 else "auto"
-    if parallel:
-        accelerator, devices, strategy = "gpu", 1, parallel_strategy
+    # if parallel:
+    #     accelerator, devices, strategy = "gpu", 1, parallel_strategy
 
     trainer = pl.Trainer(
         accelerator=accelerator,

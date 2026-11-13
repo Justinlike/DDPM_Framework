@@ -60,3 +60,9 @@ test_batch_size: 1
 num_workers: 16
 # 限制的是baser中数据进入模型的范围，以及最终计算metric的数据范围
 data_range: m11 # option: 0.0,1.0 or -1.0,1.0 
+
+# 1. 框架
+# loss train/val psnr mse 
+# 2. 开源数据集 不同部位
+# 3。超参数
+# lr lr衰减策略 Bacthsize epoch

@@ -62,7 +62,8 @@ class CT2D(BaseDataset):
         trans = data_transform_3d()
 
         self.dataset = tio.SubjectsDataset(self.subjects, transform=trans[split])
-
+        # 整个输入不随机
+        # 损失函数权重 
         self.queue_set = tio.Queue(
             subjects_dataset=self.dataset,
             max_length=queue_length,
