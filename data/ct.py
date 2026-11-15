@@ -15,15 +15,23 @@ def data_transform_3d():
         min = image.min()
         return (image - min) / (max - min)
 
+    def resize_hw(image):
+        B, H, W, D = image.shape
+        return T.Resize((256, 256, D), image_interpolation='linear')(image)
+
     data_transform = {
         "train": T.Compose([
+            # tio 中，resize的-1表示维度不变
+            tio.Lambda(resize_hw),
             T.RandomFlip(),
             tio.Lambda(custom_standardize),
         ]),
         "val": T.Compose([
+            tio.Lambda(resize_hw),
             tio.Lambda(custom_standardize),
         ]),
         "test": T.Compose([
+            tio.Lambda(resize_hw),
             tio.Lambda(custom_standardize),
         ]),
     }
@@ -140,9 +148,9 @@ class CT3D(BaseDataset):
         return self.queue_set[index]
     
 if __name__ == '__main__':
-    dataset = CT3D(dataset_dir='/data/jzk/CT/data_cba', split="train", resolution=(512,512,2), seed=42)
+    dataset = CT3D(dataset_dir='/data/jzk/CT/data_cba', split="train", resolution=(256,256,2), seed=42)
 
-    for i in dataset:
+    for i in dataset.dataset:
         #x = i['imgs'].data
         # print(i['imgs'].shape)
         # 3D
@@ -151,4 +159,4 @@ if __name__ == '__main__':
 
         # 2D
         # [2, 1, 512, 512]
-        print(i['imgs'].data.shape, i['imgs'].data.max(), i['imgs'].data.min())
+        print(i["ID"], i['imgs'].data.shape, i['imgs'].data.max(), i['imgs'].data.min())

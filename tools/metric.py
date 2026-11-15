@@ -90,6 +90,8 @@ class AllMetrics:
         }
 
     def update(self, output: torch.Tensor, target: torch.Tensor) -> None:
+        output = output.contiguous()
+        target = target.contiguous()
         # 先对输出范围约束, constraint data range from [-1, 1] to [0, 1] 以统一计算指标
         output, target = dorange_inputs(output, target, self.datarange)
 

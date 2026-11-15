@@ -2,7 +2,7 @@ import math
 import torch
 import torch.nn as nn
 import numpy as np
-
+import torch.nn.functional as F
 
 def conv_nd(dims, *args, **kwargs):
     if dims == 1:
@@ -14,10 +14,17 @@ def conv_nd(dims, *args, **kwargs):
     raise ValueError(f"unsupported dimensions: {dims}")
 
 
+# class GroupNorm32(nn.GroupNorm):
+#     def forward(self, x):
+#         return super().forward(x.float()).type(x.dtype)
+
 class GroupNorm32(nn.GroupNorm):
     def forward(self, x):
-        return super().forward(x.float()).type(x.dtype)
+        weight = self.weight.float() if self.weight is not None else None
+        bias = self.bias.float() if self.bias is not None else None
 
+        out = F.group_norm(x.float(), self.num_groups, weight, bias, self.eps)
+        return out.to(dtype=x.dtype)
 
 def normalization(channels, groups=32):
     """

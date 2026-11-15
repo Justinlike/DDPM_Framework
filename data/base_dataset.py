@@ -7,6 +7,10 @@ from torchvision import transforms
 import torch.nn.functional as F
 
 class BaseDataset(Dataset):
+    """
+    We only use this class to load the dataset file, the transform is only be used in getitem,
+    so we will rewrite the gititem function, to load data with torchio.
+    """
     def __init__(
         self,
         dataset_dir: str,
@@ -31,7 +35,7 @@ class BaseDataset(Dataset):
         ])
 
         mask_transform = transforms.Compose([
-            transforms.Resize((resolution, resolution)), # 选用Resize 还是 ReSample？需要思考一下
+            transforms.Resize((resolution, resolution)),
             transforms.ToTensor(),
         ])
 

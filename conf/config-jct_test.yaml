@@ -25,7 +25,7 @@ lr_scheduler: constant_with_warmup
 num_warmup_steps: 10000
 
 #train
-resume: /data/jzk/DDPM_Framework/output/jct_test/checkpoint/checkpoint-best.ckpt
+resume: /data/jzk/DDPM_Framework/output/jct_Img256_Batch2/checkpoint/checkpoint-bset.ckpt
 freeze_modules: null
 use_ema: false
 mixed_precision: bf16

@@ -7,7 +7,7 @@ metrics:
   - gmsd
 nrow: 6
 output_dir: output
-job_name: jct_test6
+job_name: jct_myunet_DHW_Img512_Batch1
 excluding_modules: null
 
 # tracker
@@ -24,7 +24,7 @@ weight_decay: 0.01
 criterion: in
 
 lr_scheduler: constant_with_warmup
-num_warmup_steps: 6000 # 10 000
+num_warmup_steps: 10000 # 10 000
 
 #train
 resume: null
@@ -33,12 +33,12 @@ use_ema: false
 mixed_precision: bf16
 gradient_accumulation_steps: 1 # 1
 prediction_type: sample
-max_train_steps: 100000 # 100 000
-save_step_freq: 200 # 200
+max_train_steps: 100 # 100 000
+save_step_freq: 50 # 200
 
 #evaluate 
 evaluate: false
-validation_start_steps: 6000 # 10 000
+validation_start_steps: 10000 # 10 000
 validation_steps: 200 # 200
 compare: max
 monitor: psnr
@@ -52,13 +52,13 @@ sample_method: heun
 base_data_dir: /data/jzk/CT/data_522
 dataset_name: ct3d
 resolution:
- - 512
- - 512
+ - 256
+ - 256
  - 8
-train_batch_size: 1
-test_batch_size: 1
+train_batch_size: 4
+test_batch_size: 4
 num_workers: 16
-# 限制的是baser中数据进入模型的范围，以及最终计算metric的数据范围
+# 限制的是baser中数据进入模型的范围，最终计算metric的数据范围都是[0, 1]
 data_range: m11 # option: 0.0,1.0 or -1.0,1.0 
 
 model_config:

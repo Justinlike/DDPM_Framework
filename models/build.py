@@ -52,7 +52,8 @@ def build_model(cfg):
         num_groups = cfg.model_config.num_groups,
         bottleneck_attention = cfg.model_config.bottleneck_attention,
         additive_skips = cfg.model_config.additive_skips,
-        ).to(cfg.device)
+        resample_2d = True, 
+        )
         model = JCT(config=None, model=unet, num_timesteps=sample_steps, method=sample_method)
     else:
         raise NotImplementedError(f"{model_name} is not implementde")

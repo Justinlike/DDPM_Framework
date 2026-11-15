@@ -2,6 +2,20 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+from timm.models.vision_transformer import Attention
+from timm.models.layers import to_2tuple
+
+class SinusoidalPositionalEmbedding(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, x):
+        device = x.device
+        half_dim = self.dim // 2
+        emb = math.log(10000) / (half_dim - 1)
+        emb = torch.exp(torch.arange(half_dim, device = device) * -emb)
+        emb = x[:, None] * emb[None, :]
 
 class PatchEmbedding(nn.Module):
     def __init__(
@@ -54,6 +68,16 @@ class TransformerBlock(nn.Module):
         x = x + self.attn(self.norm1(x), self.norm1(x), self.norm1(x))[0]
         x = x + self.ffn(self.norm2(x))
         return x
+
+class DiTBlock(nn.Module):
+    """
+    DiT Block with AdaLN zero conditioning.
+    """
+    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, skip=False, **kwargs):
+        super().__init__()
+        self.skip_linear = nn.Linear(2*hidden_size, hidden_size) if skip else None
+        self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.attn = Attention(hidden_size, num_heads, qkv_bias=True, **kwargs)
 
 
 class DiT(nn.Module):

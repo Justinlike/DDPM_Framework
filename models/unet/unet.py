@@ -393,7 +393,7 @@ class UNet(nn.Module):
             resample_2d=True,
             additive_skips=False,
             # means at decoder's 0 layer will be put in device 2
-            decoder_device_thresh=10,
+            decoder_device_thresh=0,
             ):
         super().__init__()
 
@@ -420,7 +420,7 @@ class UNet(nn.Module):
         self.device = None
         self.decoder_device_thresh = decoder_device_thresh
         self.additive_skips = additive_skips
-
+        self.dims = dims
         time_embed_dim = model_channels * 4
         self.time_embed = nn.Sequential(
             nn.Linear(model_channels, time_embed_dim),
@@ -623,6 +623,7 @@ class UNet(nn.Module):
         """
         we overwrite the to() method for the case where we
         distribute parts of our model to different devices
+        调用to方法, 将GPU设备写入self.device
         """
         if isinstance(args[0], (list, tuple)) and len(args[0]) > 1:
             assert not kwargs and len(args) == 1
@@ -639,7 +640,6 @@ class UNet(nn.Module):
                     b.to(self.device[1])
             self.out.to(self.device[0])
             print(f"distributed UNet components to devices {self.device}")
-
         else:
             # super().to(*args, **kwargs)
             # if self.device is None:
@@ -649,11 +649,17 @@ class UNet(nn.Module):
             self.device = None
         
         return self
-
+    
     def forward(self, x, timesteps=None, y = None):
         """
         Apply the model to an input batch
         """
+        before = tuple(x.shape)
+        # 因为我们的数据输入和模型要求形状不一致，输出模型前先换轴。
+        # 有数据不对齐问题，我们实现的UNet要求输入[B, C, D, H, W]，而现在的输入是[B, C, H, W, D]，所以需要permute
+        if self.dims == 3:
+            x = x.permute(0, 1, 4, 2, 3).contiguous()
+        
         assert (y is not None) == (self.num_classes is not None), "must specify y if and only if the model has num_classes"
         
         hs = []
@@ -674,20 +680,40 @@ class UNet(nn.Module):
 
         for k, module in enumerate(self.out_blocks):
             skip_hs = hs.pop()
-            if k == self.decoder_device_thresh:
-                h = h.to(self.device[1])
-                emb = emb.to(self.device[1])
-            if k >= self.decoder_device_thresh:
-                skip_hs = skip_hs.to(self.device[1])
+            ### 
+            spatial_mismatch = h.shape[2:] != skip_hs.shape[2:]
+            additive_mismatch = self.additive_skips and h.shape != skip_hs.shape
 
+            if spatial_mismatch or additive_mismatch:
+                encoder_depths = [shape[2] for shape in self.hs_shapes]
+                previous_block = self.out_blocks[k - 1] if k > 0 else self.middle_block
+
+                raise RuntimeError(
+                    f"decoder block {k}: h={tuple(h.shape)}, "
+                    f"skip={tuple(skip_hs.shape)}, "
+                    f"encoder D={encoder_depths}\n"
+                    f"previous block:\n{previous_block}"
+                )
+            ### 
+            if self.device is not None and k >= self.decoder_device_thresh:
+                decoder_device = self.device[1]
+                if k == self.decoder_device_thresh:
+                    h = h.to(decoder_device)
+                    emb = emb.to(decoder_device)
+                skip_hs = skip_hs.to(decoder_device)
+            
             if self.additive_skips:
                 h = (h + skip_hs) / 2
             else:
                 h = torch.cat([h, skip_hs], dim=1)
             h = module(h, emb)
+        if self.device is not None:
+            h = h.to(self.device[0])
 
-        h = h.to(self.device[0])
-        return self.out(h)
+        out = self.out(h)
+        if self.dims == 3:
+            out = out.permute(0, 1, 3, 4, 2).contiguous()  # (B, C, D, H, W) -> (B, C, H, W, D)
+        return out
 
 if __name__ == "__main__":
     from torchprofile import profile_macs

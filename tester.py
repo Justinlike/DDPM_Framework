@@ -30,7 +30,7 @@ class Tester(Baser):
                 # 边缘用padding补 
                 grid_sampler = tio.inference.GridSampler(
                     subject=subject,
-                    patch_size = (512, 512, 8),
+                    patch_size = self.cfg.resolution,
                 )
 
                 #loader = DataLoader(grid_sampler, batch_size=self.cfg.test_batch_size, shuffle=False, pin_memory=False, num_workers=16)
@@ -45,7 +45,7 @@ class Tester(Baser):
                         #     for k, v in data.items():
                         #         if hasattr(v, "shape"):
                         #             print(k, v.shape)
-
+                        # print("test imgs:", tuple(data["imgs"][tio.DATA].shape), flush=True)
                         output = self.forward(data, require_grad=False, **{"generator": None})
                         location_test = data[tio.LOCATION]
                         pred, gt = self.postprocess(data, output)
