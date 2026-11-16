@@ -1,209 +1,135 @@
-"Adapted from https://github.com/SongweiGe/TATS"
-
-import os
-from typing import Any
 from pathlib import Path
 
-import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint
-from torch.utils.data import DataLoader, Dataset, ConcatDataset
 import torch
-# from models.vqgan_3d.moniter_vqgan import (
-#     MoniterVQGAN as VQGAN, DecoderParallelStrategy, model_parallel_enabled,
-# )
+from omegaconf import OmegaConf
 from models.vqgan_3d.vqgan import VQGAN
-from models.vqgan_3d.vqgan_callbacks import ImageLogger, VideoLogger
-from data.build import build_loader
-import hydra
-from omegaconf import DictConfig, open_dict
-from data.vqgan_dataset import VQGAN_Dataset
-# import wandb
+from train_vqgan import _make_dataloaders
 
-def _make_dataset(cfg: DictConfig, split: str, ) -> Dataset:
-    # root_dit = cfg.dataset.root_dir
-    # train_split = cfg.dataset.train_split
-    # val_split =  cfg.dataset.test_split
+def load_vqgan(checkpoint_path, device=None, config_path=None):
+    """加载自己的可信 Lightning checkpoint；裸 state_dict 需提供训练配置。
 
-    train_dataset_0 = VQGAN_Dataset(
-        root_dir="/data/jzk/CT/data_522",
-        split="train",
-        modality="ncct",
-        resolution=tuple(cfg.dataset.resolution),
-        queue_length=16,
-        num_workers=0,
-        training=True,
-        normalization="m11"
-    )
+    优先使用 checkpoint 中保存的 cfg，不使用当前 YAML 覆盖训练压缩比。
+    """
+    checkpoint = torch.load(Path(checkpoint_path), map_location="cpu", weights_only=False)
+    cfg = checkpoint.get("hyper_parameters", {}).get("cfg")
+    if cfg is None:
+        if config_path is None:
+            raise ValueError("checkpoint 中没有 cfg，请提供训练时的 config_path")
+        cfg = OmegaConf.load(config_path)
+    elif isinstance(cfg, dict):
+        cfg = OmegaConf.create(cfg)
+    model = VQGAN(cfg)
+    model.load_state_dict(checkpoint.get("state_dict", checkpoint), strict=True)
+    model.codebook._need_init = False
+    model.eval().requires_grad_(False)
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    return model.to(device)
 
-    train_dataset_1 = VQGAN_Dataset(
-        root_dir="/data/jzk/CT/data_522",
-        split="train",
-        modality="ccta",
-        resolution=tuple(cfg.dataset.resolution),
-        queue_length=16,
-        num_workers=0,
-        training=True,
-        normalization="m11"
-    )
 
-    val_dataset_0 = VQGAN_Dataset(
-        root_dir="/data/jzk/CT/data_522",
-        split="test",
-        modality="ncct",
-        resolution=tuple(cfg.dataset.resolution),
-        queue_length=16,
-        num_workers=0,
-        training=False,
-        normalization="m11"
-    )
+@torch.inference_mode()
+def generate_latent(model, image, *, layout="DHW", output_layout="DHW", quantize=False):
+    """接收 tensor/ndarray，支持三维、[C,...] 或 [B,C,...] 输入。
 
-    val_dataset_1 = VQGAN_Dataset(
-        root_dir="/data/jzk/CT/data_522",
-        split="test",
-        modality="ccta",
-        resolution=tuple(cfg.dataset.resolution),
-        queue_length=16,
-        num_workers=0,
-        training=False,
-        normalization="m11"
-    )
+    layout="DHW": 已有训练 DataLoader 输出可直接传入。
+    layout="HWD": 原始图像，内部转换为训练采用的 DHW。
+    layout="native": 自定义训练流程的原生轴序，不做转换；输出也须 native。
+    quantize=False: 连续 pre_vq_conv 特征；True: 最近码本向量（不是整数索引）。
+    不进行归一化、resize 或额外 latent 缩放，返回值保留 batch/channel 轴。
+    """
+    if layout not in {"DHW", "HWD", "native"}:
+        raise ValueError("layout 必须是 DHW、HWD 或 native")
+    if output_layout not in {"DHW", "HWD", "native"}:
+        raise ValueError("output_layout 必须是 DHW、HWD 或 native")
+    if (layout == "native") != (output_layout == "native"):
+        raise ValueError("原生轴序输入须同时指定 output_layout='native'")
+    x = torch.as_tensor(image)
+    if x.ndim == 3:
+        x = x.unsqueeze(0).unsqueeze(0)
+    elif x.ndim == 4:
+        x = x.unsqueeze(0)
+    if x.ndim != 5:
+        raise ValueError("输入需为 [S1,S2,S3]、[C,S1,S2,S3] 或 [B,C,S1,S2,S3]")
+    if layout == "HWD":
+        x = x.permute(0, 1, 4, 2, 3)
+    if x.shape[1] != model.cfg.dataset.image_channels:
+        raise ValueError("输入通道数与训练配置不一致")
+    factors = tuple(int(v) for v in model.cfg.model.downsample)
+    if any(s % f for s, f in zip(x.shape[2:], factors)):
+        raise ValueError(f"输入空间尺寸 {tuple(x.shape[2:])} 必须被训练压缩比 {factors} 整除")
+    parameter = next(model.encoder.parameters())
+    x = x.to(device=parameter.device, dtype=parameter.dtype).contiguous()
+    model.eval()
+    latent = model.encode(x, quantize=False)
+    if quantize:
+        # 分块查找最近码本向量，避免原 Codebook.forward 构建巨大的 one-hot。
+        codes = model.codebook.embeddings.float()
+        flat = latent.movedim(1, -1).reshape(-1, latent.shape[1]).float()
+        indices = []
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            code_norm = codes.square().sum(1)
+            for chunk in flat.split(4096):
+                distances = chunk.square().sum(1, keepdim=True) - 2 * chunk @ codes.T + code_norm
+                indices.append(distances.argmin(1))
+            latent = torch.nn.functional.embedding(torch.cat(indices), codes).reshape(
+                latent.shape[0], *latent.shape[2:], latent.shape[1]
+            ).movedim(-1, 1).contiguous()
+    if output_layout == "HWD":
+        latent = latent.permute(0, 1, 3, 4, 2).contiguous()
+    return latent
 
-    return train_dataset_0, train_dataset_1, val_dataset_0, val_dataset_1
-
-def _make_dataloaders(cfg: DictConfig) -> tuple[DataLoader, DataLoader]:
-    train_ncct, train_ccta, val_ncct, val_ccta = _make_dataset(
-        cfg, cfg.dataset.train_split
-    )
-
-    # 合并训练集
-    train_dataset = ConcatDataset([
-        train_ncct,
-        train_ccta
-    ])
-
-    # 合并验证集
-    val_dataset = ConcatDataset([
-        val_ncct,
-        val_ccta
-    ])
-
-    loader_kwargs = {
-        "batch_size": cfg.model.batch_size,
-        "num_workers": 0,
-        "pin_memory": torch.cuda.is_available(),
-        "persistent_workers": False,
-    }
-
-    train_loader = DataLoader(
-        train_dataset,
-        shuffle=True,
-        drop_last=True,
-        **loader_kwargs
-    )
-
-    val_loader = DataLoader(
-        val_dataset,
-        shuffle=False,
-        drop_last=False,
-        **loader_kwargs
-    )
-
-    print(f"Train NCCT: {len(train_ncct)}")
-    print(f"Train CCTA: {len(train_ccta)}")
-    print(f"Train Total: {len(train_dataset)}")
-
-    print(f"Val NCCT: {len(val_ncct)}")
-    print(f"Val CCTA: {len(val_ccta)}")
-    print(f"Val Total: {len(val_dataset)}")
-
-    return train_loader, val_loader
-
-@hydra.main(config_path='/data/jzk/DDPM_Framework/conf', config_name='config-vqgan', version_base=None)
-def run(cfg: DictConfig):
-    pl.seed_everything(cfg.model.seed)
-
-    # parallel = model_parallel_enabled()
-    # parallel_strategy = DecoderParallelStrategy() if parallel else None
-
-    # 接着写
+if __name__ == "__main__":
+    cfg = OmegaConf.load("/data/jzk/DDPM_Framework/conf/config-vqgan-infer.yaml")
     train_dataloader, val_dataloader = _make_dataloaders(cfg)
 
-    # automatically adjust learning rate
-    batch_size, base_lr, ngpu, accumulate = cfg.model.batch_size, cfg.model.lr, cfg.model.gpus, cfg.model.accumulate_grad_batches
+    model = load_vqgan("/data/jzk/DDPM_Framework/output/vq_gan/CT3D/single_gpu2_gan_train/lightning_logs/version_1/checkpoints/epoch=2-step=57000-train/recon_loss=0.04.ckpt", device="cuda:0")
+    # print(model)
+    model.eval()
 
-    # if parallel:
-    #     # Model shards do not multiply the number of independently trained samples.
-    #     ngpu = 1
+    # # image: [512,512,64]，使用与训练一致的归一化
+    # for img in train_dataloader:
+    #     latent = generate_latent(
+    #         model, img,
+    #         layout="HWD",
+    #         output_layout="HWD",
+    #         quantize=False,  # True 则返回量化后的码本向量
+    #     )
+    #     print("latent shape:", latent.shape)
 
-    with open_dict(cfg):
-        cfg.model.lr = accumulate * (ngpu/8.) * (batch_size/4.) * base_lr
-        cfg.model.default_root_dir = os.path.join(
-            cfg.model.default_root_dir, cfg.dataset.name, cfg.model.default_root_dir_postfix)
-    print("Setting learning rate to {:.2e} = {} (accumulate_grad_batches) * {} (num_gpus/8) * {} (batchsize/4) * {:.2e} (base_lr)".format(
-        cfg.model.lr, accumulate, ngpu/8, batch_size/4, base_lr))
+    # batch = next(iter(train_dataloader))
+    # print(batch.keys())  # 先查看实际字段名    
+    parameter = next(model.encoder.parameters())
 
-    model = VQGAN(cfg)
+    for batch in val_dataloader:
+        img = batch["data"].to(
+            device=parameter.device,  # 跟随模型，当前是 cuda:2
+            dtype=parameter.dtype,
+            non_blocking=True,
+        )
+        print("img shape:", img.shape)  # [B, C, D, H, W]
 
-    callbacks = []
-    callbacks.append(ModelCheckpoint(monitor='val/recon_loss',
-                     save_top_k=3, mode='min', filename='latest_checkpoint'))
-    callbacks.append(ModelCheckpoint(every_n_train_steps=3000,
-                     save_top_k=-1, filename='{epoch}-{step}-{train/recon_loss:.2f}'))
-    callbacks.append(ModelCheckpoint(every_n_train_steps=10000, save_top_k=-1,
-                     filename='{epoch}-{step}-10000-{train/recon_loss:.2f}'))
-    if cfg.model.get("media_logging", True):
-        callbacks.append(ImageLogger(
-            batch_frequency=750, max_images=4, clamp=True))
-        callbacks.append(VideoLogger(
-            batch_frequency=1500, max_videos=4, clamp=True))
+        with torch.inference_mode():
+            z_quantized, indices = model.encode(
+                img,
+                quantize=True,
+                include_embeddings=True,
+            )
+            print("z_quantized shape:", z_quantized.shape)  # [B, C, D', H', W']
+    
+            # 方法一：解码量化后的向量
+            reconstruction = model.decoder(
+                model.post_vq_conv(z_quantized)
+            )
+            print("reconstruction shape:", reconstruction.shape)  # [B, C, D, H, W]
+    
+            # # 方法二：解码码本索引，结果与方法一对应
+            # reconstruction = model.decode(indices)
+            # print("reconstruction shape:", reconstruction.shape)  # [B, C, D, H, W]
 
-    # Prefer an explicit checkpoint; discover existing files without renaming them.
-    ckpt_path = cfg.model.get("resume_from_checkpoint")
-    base_dir = Path(cfg.model.default_root_dir) / 'lightning_logs'
-    if not ckpt_path and cfg.model.get("auto_resume", True) and base_dir.is_dir():
-        versions = sorted(
-            (p for p in base_dir.glob('version_*')
-             if p.is_dir() and p.name.removeprefix('version_').isdigit()),
-            key=lambda p: int(p.name.removeprefix('version_')), reverse=True)
-        for version in versions:
-            candidates = list((version / 'checkpoints').rglob('*.ckpt'))
-            if candidates:
-                ckpt_path = str(max(candidates, key=lambda p: p.stat().st_mtime))
-                break
-    if ckpt_path:
-        print(f'Resuming from checkpoint: {ckpt_path}')
-
-    # GPU 配置
-    num_gpus = cfg.model.gpus
-    accelerator = "gpu" if torch.cuda.is_available() else "cpu"
-    devices = num_gpus if accelerator == "gpu" else 1
-    # 多 GPU 时使用 DDP
-    strategy = "ddp" if devices > 1 else "auto"
-    # if parallel:
-    #     accelerator, devices, strategy = "gpu", 1, parallel_strategy
-
-    trainer = pl.Trainer(
-        accelerator=accelerator,
-        devices=devices,
-        strategy=strategy,
-
-        accumulate_grad_batches=1,
-        default_root_dir=cfg.model.default_root_dir,
-        callbacks=callbacks,
-
-        limit_train_batches=cfg.model.get("limit_train_batches", 1.0),
-        limit_val_batches=cfg.model.get("limit_val_batches", 1.0),
-        max_steps=cfg.model.max_steps,
-        max_epochs=cfg.model.max_epochs,
-        precision="16-mixed" if str(cfg.model.precision) == "16" else cfg.model.precision,
-        # Gradient clipping is performed by the manual optimization loop.
-        
-    )
-        
-    trainer.fit(model, train_dataloader, val_dataloader, ckpt_path=ckpt_path)
-
-
-if __name__ == '__main__':
-    run()
-
-    # PL_TORCH_DISTRIBUTED_BACKEND=gloo python train/train_vqgan.py dataset=brats dataset.root_dir=<INSERT_PATH_TO_BRATS_DATASET> model=vq_gan_3d model.gpus=1 model.default_root_dir_postfix='flair' model.precision=16 model.embedding_dim=8 model.n_hiddens=16 model.downsample=[2,2,2] model.num_workers=32 model.gradient_clip_val=1.0 model.lr=3e-4 model.discriminator_iter_start=10000 model.perceptual_weight=4 model.image_gan_weight=1 model.video_gan_weight=1 model.gan_feat_weight=4 model.batch_size=2 model.n_codes=16384 model.accumulate_grad_batches=1 
+        # latent = generate_latent(
+        #     model, img,
+        #     layout="HWD",
+        #     output_layout="HWD",
+        #     quantize=False,  # True 则返回量化后的码本向量
+        # )
+        # print("latent shape:", latent.shape)
+        break

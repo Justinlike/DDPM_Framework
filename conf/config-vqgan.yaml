@@ -11,8 +11,8 @@ dataset:
   image_channels: 1
 
   # TorchIO samples patches as (H, W, D). train_vqgan.py converts them to
-  # the VQGAN layout (C, T, H, W), so this becomes T=8, H=W=128.
-  resolution: [128, 128, 64]
+  # the VQGAN layout (C, D, H, W), in dataset, we will permute it.
+  resolution: [128, 128, 64] # H, W, D
   queue_length: 16
   samples_per_volume: 16
 
@@ -42,7 +42,7 @@ model:
   n_codes: 2048
   n_hiddens: 64 # 240
   lr: 3.0e-4
-  downsample: [4, 4, 2]
+  downsample: [2, 4, 4] # D, H, W
   disc_channels: 64
   disc_layers: 3
   discriminator_iter_start: 50000

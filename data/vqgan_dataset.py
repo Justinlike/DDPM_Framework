@@ -6,25 +6,12 @@ from torchio import transforms as T
 from torchio.data import UniformSampler
 from data.base_dataset import BaseDataset
 
-class PadToMinimumSize(tio.Transform):
-    """Pad undersized axes without cropping larger volumes before sampling."""
-
-    def __init__(self, minimum_size):
-        super().__init__()
-        self.minimum_size = tuple(minimum_size)
-
-    def apply_transform(self, subject):
-        padding = []
-        for size, minimum in zip(subject.spatial_shape, self.minimum_size):
-            missing = max(0, minimum - size)
-            padding.extend((missing // 2, missing - missing // 2))
-        if any(padding):
-            # Applied after normalization: -1 is the background intensity.
-            subject = tio.Pad(tuple(padding), padding_mode=-1)(subject)
-        return subject
-
 def data_transform_3d_m11():
     # define the [-1, 1] normalization transform and maybe we need a cut off range.
+    def hwd_resize(image):
+        B, H, W, D = image.shape
+        return T.Resize((H, W, 64), image_interpolation='linear')(image)
+
     def custom_standardize(image):
         # return [-1, 1] normalization
         # image.clamp(-1000, 1000)
@@ -36,13 +23,16 @@ def data_transform_3d_m11():
 
     data_transform = {
         "train": T.Compose([
+            T.Resize((-1, -1, 64), image_interpolation="linear"),
             T.RandomFlip(),
             tio.Lambda(custom_standardize),
         ]),
         "val": T.Compose([
+            T.Resize((-1, -1, 64), image_interpolation="linear"),
             tio.Lambda(custom_standardize),
         ]),
         "test": T.Compose([
+            T.Resize((-1, -1, 64), image_interpolation="linear"),
             tio.Lambda(custom_standardize),
         ]),
     }
@@ -119,17 +109,17 @@ class VQGAN_Dataset(BaseDataset):
 
         self.dataset = tio.SubjectsDataset(
             self.subjects,
-            transform=T.Compose([trans[split], PadToMinimumSize(self.patch_size)]),
+            transform=T.Compose([trans[split], ]),
         )
 
         self.queue = tio.Queue(
             subjects_dataset=self.dataset,
-            max_length=queue_length,
-            samples_per_volume=samples_per_volume,
-            sampler=UniformSampler(self.patch_size),
-            num_workers=num_workers,
-            shuffle_subjects=training,
-            shuffle_patches=training,
+            max_length=queue_length,                # 队列中最多缓存的patch数量
+            samples_per_volume=samples_per_volume,  # default: 16 表示会按照sampler中的patch大小从每个volume中采样16个patch
+            sampler=UniformSampler(self.patch_size),# 按均匀随机的位置裁出指定尺寸的 patch
+            num_workers=num_workers,                # 队列内部加载病例的子进程数；0 表示在主进程加载
+            shuffle_subjects=training,              # 每轮打乱病例顺序
+            shuffle_patches=training,               # 打乱队列中已采样 patch 的顺序
         )
 
     def __len__(self):
@@ -140,16 +130,16 @@ class VQGAN_Dataset(BaseDataset):
         if index < 0 or index >= len(self):
             raise IndexError(index)
         image = self.queue[index]["data"].data.float()
-        # TorchIO uses (C, H, W, D); VQGAN expects (C, T, H, W).
+        # TorchIO uses (C, H, W, D); VQGAN expects (C, D, H, W).
         image = image.permute(0, 3, 1, 2).contiguous()
         return {"data": image}
 
 if __name__ == "__main__":
     dataset = VQGAN_Dataset(
         root_dir="/data/jzk/CT/data_522",
-        split="train",
+        split="test",
         modality="ncct",
-        resolution=(512, 512, 64),
+        resolution=(256, 256, 64),
         queue_length=16,
         num_workers=0,
         training=True,
