@@ -23,6 +23,7 @@ def _make_dataset(cfg: DictConfig, split: str, ) -> Dataset:
     # root_dit = cfg.dataset.root_dir
     # train_split = cfg.dataset.train_split
     # val_split =  cfg.dataset.test_split
+    samples_per_volume = cfg.dataset.samples_per_volume
 
     train_dataset_0 = VQGAN_Dataset(
         root_dir="/data/jzk/CT/data_522",
@@ -32,7 +33,8 @@ def _make_dataset(cfg: DictConfig, split: str, ) -> Dataset:
         queue_length=16,
         num_workers=0,
         training=True,
-        normalization="m11"
+        normalization="m11",
+        samples_per_volume=samples_per_volume
     )
 
     train_dataset_1 = VQGAN_Dataset(
@@ -43,7 +45,8 @@ def _make_dataset(cfg: DictConfig, split: str, ) -> Dataset:
         queue_length=16,
         num_workers=0,
         training=True,
-        normalization="m11"
+        normalization="m11",
+        samples_per_volume=samples_per_volume
     )
 
     val_dataset_0 = VQGAN_Dataset(
@@ -54,7 +57,8 @@ def _make_dataset(cfg: DictConfig, split: str, ) -> Dataset:
         queue_length=16,
         num_workers=0,
         training=False,
-        normalization="m11"
+        normalization="m11",
+        samples_per_volume=samples_per_volume
     )
 
     val_dataset_1 = VQGAN_Dataset(
@@ -65,7 +69,8 @@ def _make_dataset(cfg: DictConfig, split: str, ) -> Dataset:
         queue_length=16,
         num_workers=0,
         training=False,
-        normalization="m11"
+        normalization="m11",
+        samples_per_volume=samples_per_volume
     )
 
     return train_dataset_0, train_dataset_1, val_dataset_0, val_dataset_1

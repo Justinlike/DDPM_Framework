@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from tools.DWT_IDWT.DWT_IDWT_layer import DWT_3D, IDWT_3D
-from models.nn import conv_nd, normalization, zero_module, scale_module, checkpoint, avg_pool_nd, count_flops_attn, timestep_embedding
+from models.unet.nn import conv_nd, normalization, zero_module, scale_module, checkpoint, avg_pool_nd, count_flops_attn, timestep_embedding
 # 目前的想法是将模型的结构定义为一个抽象类，具体的实现由子类完成。这样可以在不同的任务中复用相同的模型结构，同时也方便进行扩展和修改。
 # 其他类只需要做初始化即可，
 class AbstractUNet(nn.Module):
@@ -91,23 +91,33 @@ class TimestepEmbeddingSequential(nn.Sequential, TimestepBlock):
         return x
 
 class DownSample(nn.Module):
-    def __init__(self, channels, use_conv, dims=2, out_channels = None, resample_2d = True):
+    def __init__(self, channels, use_conv = True, dims = 2, out_channels = None, resample_2d = True, use_freq=False):
         super().__init__()
         self.channels = channels
         self.out_channels = out_channels or channels # default to same number of channels
         self.use_conv = use_conv
         self.dims = dims
-        stride = (1, 2, 2) if dims == 3 and resample_2d else 2
+        stride = (1, 2, 2) if dims == 3 and resample_2d else 2 # un istropic option.
+
+        self.use_freq = use_freq
+        self.dwt = DWT_3D("haar") if use_freq and dims == 3 else None
         
         if use_conv:
             self.conv = conv_nd(dims, self.channels, self.out_channels, 3, stride = stride, padding = 1)
+        elif self.use_freq:
+            self.conv = self.dwt
         else:
             assert self.channels == self.out_channels
             self.conv = avg_pool_nd(dims, kernel_size = stride, stride = stride)
 
     def forward(self, x):
         assert x.shape[1] == self.channels
-        return self.conv(x)
+        if self.use_freq:
+            LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.op(x)
+            x = (LLL / 3., (LLH, LHL, LHH, HLL, HLH, HHL, HHH))
+        else:
+            x = self.conv(x)
+        return x
 
 
 class UpSample(nn.Module):
@@ -115,13 +125,17 @@ class UpSample(nn.Module):
     An upsampling layer with an optional convolution.
     current input: [B, C, H, W, D], wanted [B, C, D, H, W] watting check and review the code.!!!
     """
-    def __init__(self, channels, use_conv, dims=2, out_channels = None, resample_2d = True):
+    def __init__(self, channels, use_conv = True, dims = 2, out_channels = None, resample_2d = True, use_freq = False):
         super().__init__()
         self.channels = channels
         self.out_channels = out_channels or channels # default to same number of channels
         self.use_conv = use_conv
         self.dims = dims
         self.resample_2d = resample_2d
+
+        self.use_freq = use_freq
+        self.idwt = IDWT_3D("haar") if use_freq and dims == 3 else None
+
         if use_conv:
             self.conv = conv_nd(dims, self.channels, self.out_channels, 3, padding=1)
 
@@ -129,7 +143,14 @@ class UpSample(nn.Module):
         assert x.shape[1] == self.channels, f"In UpSampling Module expected input with {self.channels} channels, got {x.shape[1]} channels instead"
         # optional: for 3d image, only upsample the height and width, keep the depth unchanged
         # 考虑到医学图像各向异性，深度或许不需要采样。
-        if self.dims == 3 and self.resample_2d:
+        if isinstance(x, tuple): # 如果是 DWT 输出的 tuple，先取出 LLL 分量进行上采样
+            skip = x[1]
+            x = x[0]
+        assert x.shape[1] == self.channels
+
+        if self.use_freq:
+            x = self.idwt(3.*x, skip[0], skip[1], skip[2], skip[3], skip[4], skip[5], skip[6])
+        elif self.dims == 3 and self.resample_2d:
             # 只对长、宽维度进行上采样，深度维保持不变
             x = F.interpolate(
                 x, (x.shape[2], x.shape[3]*2, x.shape[4]*2), mode = "nearest"
@@ -143,7 +164,25 @@ class UpSample(nn.Module):
             x = self.conv(x)
         return x
 
+class WaveletDownsample(nn.Module):
+    def __init__(self, in_ch = None, out_ch = None):
+        super().__init__()
+        out_ch = out_ch if out_ch is not None else in_ch
+        self.in_ch = in_ch
+        self.out_ch = out_ch
+        self.conv = conv_nd(3, in_ch * 8, out_ch, 3, stride = 1, padding = 1)
+        self.dwt = DWT_3D("haar")
+    
+    def forward(self, x):
+        LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.dwt(x)
+        x = torch.cat([LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim = 1) / 3
+        x = self.conv(x)
+        return x
 
+class WaveletUpsample(nn.Module):
+    def __init__(self, in_ch = None, out_ch = None):
+        super().__init__()
+        
 class WaveletGatingDownsample(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -162,7 +201,7 @@ class ResBlock(TimestepBlock):
         emb_channels,
         dropout,
         out_channels = None,
-        use_conv = False,
+        use_conv = True,
         use_scale_shift_norm = False,
         dims = 2,
         use_checkpoint = False,
@@ -170,16 +209,19 @@ class ResBlock(TimestepBlock):
         down = False,
         num_groups = 32,
         resample_2d = True,
+        use_freq = False,
     ):
         super().__init__()
         self.channels = channels
         self.emb_channels = emb_channels
         self.dropout = dropout
         self.out_channels = out_channels or channels
+        self.dims = dims
         self.use_conv = use_conv
         self.use_checkpoint = use_checkpoint
         self.use_shift_scale_norm = use_scale_shift_norm
         self.num_groups = num_groups
+        self.use_freq = use_freq
 
         self.in_layers = nn.Sequential(
             normalization(channels, self.num_groups),
@@ -190,11 +232,11 @@ class ResBlock(TimestepBlock):
         self.updown = up or down
 
         if up:
-            self.h_upd = UpSample(channels, resample_2d=resample_2d)
-            self.x_upd = UpSample(channels, resample_2d=resample_2d)
+            self.h_upd = UpSample(channels, use_conv=use_conv, dims=dims, resample_2d=resample_2d, use_freq=use_freq)
+            self.x_upd = UpSample(channels, use_conv=use_conv, dims=dims, resample_2d=resample_2d, use_freq=use_freq)
         elif down:
-            self.h_upd = DownSample(channels, resample_2d=resample_2d)
-            self.x_upd = DownSample(channels, resample_2d=resample_2d)
+            self.h_upd = DownSample(channels, use_conv=use_conv, dims=dims, resample_2d=resample_2d, use_freq=use_freq)
+            self.x_upd = DownSample(channels, use_conv=use_conv, dims=dims, resample_2d=resample_2d, use_freq=use_freq)
         else:
             self.h_upd = self.x_upd = nn.Identity()
 
@@ -215,6 +257,7 @@ class ResBlock(TimestepBlock):
             ),
         )
 
+        # skip branch
         if self.out_channels == channels:
             self.skip_connection = nn.Identity()
         elif use_conv:
@@ -228,14 +271,35 @@ class ResBlock(TimestepBlock):
         )
 
     def _forward(self, x, emb):
-        if self.updown:
-            in_rest, in_conv = self.in_layers[:-1], self.in_layers[-1]
-            h = in_rest(x)
-            h = self.h_upd(h)
-            x = self.x_upd(x)
-            h = in_conv(h)
+        if isinstance(x, tuple):
+            skip = x[1]
         else:
-            h = self.in_layers(x)
+            skip = None
+
+        if self.use_freq:
+            if self.updown:
+                if self.up:
+                    x = x[0]
+                h = self.in_layers(x)
+
+                if self.up:
+                    h = (h, skip)
+                    x = (x, skip)
+                h, skip = self.h_upd(h)
+                x = self.x_upd(x)
+            else:
+                if isinstance(x, tuple):
+                    x = x[0]
+                h = self.in_layers(x)
+        elif self.use_conv:
+            if self.updown:
+                in_rest, in_conv = self.in_layers[:-1], self.in_layers[-1]
+                h = in_rest(x)
+                h = self.h_upd(h)
+                x = self.x_upd(x)
+                h = in_conv(h)
+            else:
+                h = self.in_layers(x)
 
         emb_out = self.emb_layers(emb)
 
@@ -243,7 +307,7 @@ class ResBlock(TimestepBlock):
             emb_out = emb_out[..., None]
 
         if self.use_shift_scale_norm:
-            print("use_shift_scale_norm is True.")
+            # print("use_shift_scale_norm is True.")
             out_norm, out_rest = self.out_layers[0], self.out_layers[1:]
             scale, shift = torch.chunk(emb_out, 2, dim=1)
             h = out_norm(h) * (1 + scale) + shift
@@ -252,7 +316,17 @@ class ResBlock(TimestepBlock):
             h = h + emb_out
             h = self.out_layers(h)
 
-        return h + self.skip_connection(x)
+        # add skip connections
+        out = self.skip_connection(x) + h
+        # 只有当skip存在，即使用
+        if self.use_conv:
+            return out
+        # 这里可能遇到接受时是一个元组导致报错。原先就是self.skip_connection(x) + h
+        # 但是或许，在Downsample和Upsample已经解决
+        elif self.use_freq:
+            return out, skip
+        else:
+            return out
 
 
 class AttentionBlock(nn.Module):
@@ -375,6 +449,8 @@ class UNet(nn.Module):
             out_channels,
             num_res_blocks,
             attention_resolutions,
+            use_conv = True,
+            use_freq = False,
             dropout = 0,
             channel_mult = [1, 2, 4, 8],
             conv_resample=True,
@@ -396,6 +472,10 @@ class UNet(nn.Module):
             decoder_device_thresh=0,
             ):
         super().__init__()
+
+        self.use_conv = use_conv
+        self.use_freq = use_freq
+        assert not (use_conv and use_freq), "use_conv and use_freq cannot be True at the same time."
 
         if num_heads_upsample == -1:
             num_heads_upsample = num_heads
@@ -662,7 +742,7 @@ class UNet(nn.Module):
         
         assert (y is not None) == (self.num_classes is not None), "must specify y if and only if the model has num_classes"
         
-        hs = []
+        hs = [] # 存储每一层的输出，用于skip connection
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
 
         if self.num_classes is not None:
@@ -673,6 +753,8 @@ class UNet(nn.Module):
         self.hs_shapes = []
         for module in self.input_blocks:
             h = module(h, emb)
+            if isinstance(h, tuple):
+                h = h[0]  # 如果h是一个元组，取第一个元素作为输出
             hs.append(h)
             self.hs_shapes.append(h.shape)
 

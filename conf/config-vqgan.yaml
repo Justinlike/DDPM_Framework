@@ -19,6 +19,7 @@ dataset:
   # data/ct.py first min-max normalizes each volume/patch to [0, 1].
   # MedicalDiffusion trains VQGAN with values in [-1, 1].
   normalization: zero_one_to_minus_one
+  training: True
 
 model:
   seed: 1234

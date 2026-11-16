@@ -8,7 +8,8 @@ import numpy as np
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
 def load_vqgan(checkpoint_path, device=None, config_path=None):
-    """加载自己的可信 Lightning checkpoint；裸 state_dict 需提供训练配置。
+    """
+    加载自己的可信 Lightning checkpoint；裸 state_dict 需提供训练配置。
 
     优先使用 checkpoint 中保存的 cfg，不使用当前 YAML 覆盖训练压缩比。
     """

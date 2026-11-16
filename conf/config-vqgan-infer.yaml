@@ -14,11 +14,12 @@ dataset:
   # the VQGAN layout (C, D, H, W), in dataset, we will permute it.
   resolution: [512, 512, 64] # H, W, D
   queue_length: 16
-  samples_per_volume: 16
+  samples_per_volume: 1
 
   # data/ct.py first min-max normalizes each volume/patch to [0, 1].
   # MedicalDiffusion trains VQGAN with values in [-1, 1].
   normalization: zero_one_to_minus_one
+  training: False
 
 model:
   seed: 1234
