@@ -129,10 +129,18 @@ class VQGAN_Dataset(BaseDataset):
         # Queue ignores indices, so enforce the Dataset iteration boundary here.
         if index < 0 or index >= len(self):
             raise IndexError(index)
-        image = self.queue[index]["data"].data.float()
+        patch_image = self.queue[index]["data"]
+        image = patch_image.data.float()
         # TorchIO uses (C, H, W, D); VQGAN expects (C, D, H, W).
         image = image.permute(0, 3, 1, 2).contiguous()
-        return {"data": image}
+        return {
+            "data": image, 
+            "id": self.queue[index]["ID"], 
+            "affine": torch.as_tensor(
+                patch_image.affine.copy(),
+                dtype=torch.float64,
+            ),
+        }
 
 if __name__ == "__main__":
     dataset = VQGAN_Dataset(
@@ -147,4 +155,5 @@ if __name__ == "__main__":
     )
     print(f"Dataset length: {len(dataset)}")
     for i in dataset:
+        print("ID:", i["id"])
         print(i["data"].shape, i['data'].data.max(), i['data'].data.min())  # Should print (C, T, H, W)
