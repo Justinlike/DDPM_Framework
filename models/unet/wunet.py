@@ -323,6 +323,8 @@ class WavUNetModel(nn.Module):
                 p = next(self.parameters())
                 self.devices = [p.device, p.device]
 
+        return self
+
     def forward(self, x, timesteps):
         """
         Apply the model to an input batch.
@@ -339,7 +341,8 @@ class WavUNetModel(nn.Module):
         self.hs_shape = []
 
         for module in self.input_blocks:
-            if not isinstance(module, WaveletDownsample):
+            print("module:", module)
+            if not isinstance(module[0], WaveletDownsample):
                 h = module(h, emb)
                 skip = None
                 if isinstance(h, tuple):
@@ -347,7 +350,9 @@ class WavUNetModel(nn.Module):
                 hs.append(h)
                 self.hs_shape.append(h.shape)
             else:
+                print("input_pyramid:", input_pyramid.shape, emb.shape)
                 input_pyramid = module(input_pyramid, emb)
+                print(input_pyramid.shape, h.shape)
                 input_pyramid = input_pyramid + h
                 h = input_pyramid
 
@@ -423,11 +428,11 @@ if __name__ == "__main__":
         use_conv = False
     ).to(device)
     
-    print(model)
+    # print(model)
     model.eval()
     
     with torch.no_grad():
-        out = model(x, timesteps=timesteps, y=None)
+        out = model(x, timesteps=timesteps)
 
     print("Output shape:", out.shape)
 

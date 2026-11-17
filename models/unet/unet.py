@@ -113,7 +113,7 @@ class DownSample(nn.Module):
     def forward(self, x):
         assert x.shape[1] == self.channels
         if self.use_freq:
-            LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.op(x)
+            LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.conv(x)
             x = (LLL / 3., (LLH, LHL, LHH, HLL, HLH, HHL, HHH))
         else:
             x = self.conv(x)
@@ -164,6 +164,7 @@ class UpSample(nn.Module):
             x = self.conv(x)
         return x
 
+# 频域感知下采样
 class WaveletDownsample(nn.Module):
     def __init__(self, in_ch = None, out_ch = None):
         super().__init__()
@@ -175,7 +176,10 @@ class WaveletDownsample(nn.Module):
     
     def forward(self, x):
         LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.dwt(x)
+        print("in wavelet downsample:", LLL.shape, LLH.shape, LHL.shape, LHH.shape, HLL.shape, HLH.shape, HHL.shape, HHH.shape)
+        print(self.in_ch, self.out_ch)
         x = torch.cat([LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim = 1) / 3
+        print("in wavelet downsample:", x.shape)
         x = self.conv(x)
         return x
 
