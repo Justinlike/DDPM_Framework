@@ -381,7 +381,7 @@ class WavUNetModel(nn.Module):
                 # h = input_pyramid + h
                 # print("input_pyramid:", input_pyramid.shape, emb.shape)
                 input_pyramid = module(input_pyramid, emb)
-                print(input_pyramid.shape, h.shape)
+                # print(input_pyramid.shape, h.shape)
                 input_pyramid = input_pyramid + h
                 h = input_pyramid
 
@@ -413,7 +413,7 @@ class WavUNetModel(nn.Module):
         for module in self.output_blocks:
             print("output module:", module)
             new_hs = hs.pop()
-            new_wavelet_hs = wavelet_hs.pop() if wavelet_hs else None
+            # new_wavelet_hs = wavelet_hs.pop() if wavelet_hs else None
 
             # if new_hs is not None:
             #     skip = new_hs
@@ -425,9 +425,9 @@ class WavUNetModel(nn.Module):
                 f"skip 空间尺寸不匹配: h={h.shape}, skip={new_hs.shape}"
             )
             # use additive skip connection
+            # 处理空间域skip
             if self.additive_skips:
                 h = (h + new_hs) / np.sqrt(2.0)
-
             # use frequency aware skip connection
             # 这个地方貌似不是我们理解的use_freq，而是指是否使用频域的skip connection
             # elif self.use_freq:
@@ -437,12 +437,24 @@ class WavUNetModel(nn.Module):
                     l[1] = skip
                     h = tuple(l)
                 else:
-                    h = (h, skip)
+                    print("进入tuple")
+                    print("h shape:", h.shape, "new_hs shape:", len(new_wavelet_hs))
+                    h = (h, new_wavelet_hs)
             else:
-                print("h shape:", h.shape, "new_hs shape:", new_hs.shape)
+                # print("h shape:", h.shape, "new_hs shape:", new_hs.shape)
                 h = torch.cat([h, new_hs], dim=1)
 
+            # 只有包含小波上采样的块，才取出并携带高频子带
+            needs_details = any(
+                isinstance(layer, UpSample) and layer.use_freq
+                for layer in module
+            )
+
+            if needs_details:
+                h = (h, wavelet_hs.pop())
+
             h = module(h, emb)
+            
             # # unpack the module, for match the upsample's input.
             # for layer in module:
             #     # resblock may return [h, None]
@@ -470,7 +482,7 @@ class WavUNetModel(nn.Module):
 if __name__ == "__main__":
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    x = torch.randn(1, 1, 16, 256, 256).to(device)
+    x = torch.randn(1, 1, 16, 128, 128).to(device)
     timesteps = torch.tensor([1], device=device)
     # x = torch.randn(1, 1, 8, 64, 64, device=device)
     print(f"input shape {x.shape}")
@@ -483,7 +495,7 @@ if __name__ == "__main__":
         num_res_blocks=2,
         attention_resolutions=[],
         dropout=0.1,
-        channel_mult=(1, 2, 4),
+        channel_mult=(1, 2, 2, 4),
         conv_resample=True,
         dims=3,
         num_classes=None,
@@ -509,6 +521,8 @@ if __name__ == "__main__":
     
     with torch.no_grad():
         out = model(x, timesteps=timesteps)
-
+    
+    print(1)
     print("Output shape:", out.shape)
+    print(1)
 

@@ -84,31 +84,31 @@ class TimestepEmbeddingSequential(nn.Sequential, TimestepBlock):
             # print("cuDNN enabled:", torch.backends.cudnn.enabled)
 
             # check if the layer is TimestepBlock, pass the emb to it.
-            # if isinstance(layer, TimestepBlock):
-            #     x = layer(x, emb)
-            # else:
-            #     x = layer(x)
-            
-            if isinstance(x, tuple) and not isinstance(layer, UpSample):
-                features, details = x
-
-                if isinstance(layer, TimestepBlock):
-                    features = layer(features, emb)
-                else:
-                    features = layer(features)
-
-                # 当前普通 ResBlock 可能返回 (out, None)
-                if isinstance(features, tuple):
-                    features, new_details = features
-                    if new_details is not None:
-                        details = new_details
-
-                x = (features, details)
+            if isinstance(layer, TimestepBlock):
+                x = layer(x, emb)
             else:
-                if isinstance(layer, TimestepBlock):
-                    x = layer(x, emb)
-                else:
-                    x = layer(x)
+                x = layer(x)
+
+            # if isinstance(x, tuple) and not isinstance(layer, UpSample):
+            #     features, details = x
+
+            #     if isinstance(layer, TimestepBlock):
+            #         features = layer(features, emb)
+            #     else:
+            #         features = layer(features)
+
+            #     # 当前普通 ResBlock 可能返回 (out, None)
+            #     if isinstance(features, tuple):
+            #         features, new_details = features
+            #         if new_details is not None:
+            #             details = new_details
+
+            #     x = (features, details)
+            # else:
+            #     if isinstance(layer, TimestepBlock):
+            #         x = layer(x, emb)
+            #     else:
+            #         x = layer(x)
         return x
 
 class DownSample(nn.Module):
@@ -166,9 +166,10 @@ class UpSample(nn.Module):
         assert x.shape[1] == self.channels, f"In UpSampling Module expected input with {self.channels} channels, got {x.shape[1]} channels instead"
         # optional: for 3d image, only upsample the height and width, keep the depth unchanged
         # 考虑到医学图像各向异性，深度或许不需要采样。
-
+        
         if self.use_freq:
             assert skip is None, f"Expected skip connections for IDWT, got {skip}"
+            # print(skip)
             x = self.idwt(3.*x, skip[0], skip[1], skip[2], skip[3], skip[4], skip[5], skip[6])
         elif self.dims == 3 and self.resample_2d:
             # 只对长、宽维度进行上采样，深度维保持不变
@@ -196,10 +197,10 @@ class WaveletDownsample(nn.Module):
     
     def forward(self, x):
         LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.dwt(x)
-        print("in wavelet downsample:", LLL.shape, LLH.shape, LHL.shape, LHH.shape, HLL.shape, HLH.shape, HHL.shape, HHH.shape)
-        print(self.in_ch, self.out_ch)
+        # print("in wavelet downsample:", LLL.shape, LLH.shape, LHL.shape, LHH.shape, HLL.shape, HLH.shape, HHL.shape, HHH.shape)
+        # print(self.in_ch, self.out_ch)
         x = torch.cat([LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim = 1) / 3
-        print("in wavelet downsample:", x.shape)
+        # print("in wavelet downsample:", x.shape)
         x = self.conv(x)
         return x
 
@@ -344,8 +345,8 @@ class ResBlock(TimestepBlock):
             h = self.out_layers(h)
 
         # add skip connections
-        print("in resblock:", h.shape, x.shape)
-        print(self.skip_connection)
+        # print("in resblock:", h.shape, x.shape)
+        # print(self.skip_connection)
         out = self.skip_connection(x) + h
         # 只有当skip存在，即使用
         if self.use_conv:
@@ -829,7 +830,7 @@ class UNet(nn.Module):
         return out
 
 if __name__ == "__main__":
-    from torchprofile import profile_macs
+    # from torchprofile import profile_macs
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
