@@ -226,6 +226,8 @@ class ResBlock(TimestepBlock):
         self.use_shift_scale_norm = use_scale_shift_norm
         self.num_groups = num_groups
         self.use_freq = use_freq
+        self.up = up
+        self.down = down
 
         self.in_layers = nn.Sequential(
             normalization(channels, self.num_groups),
@@ -282,6 +284,7 @@ class ResBlock(TimestepBlock):
 
         if self.use_freq:
             if self.updown:
+                # 下采样怎么办？
                 if self.up:
                     x = x[0]
                 h = self.in_layers(x)
@@ -321,6 +324,8 @@ class ResBlock(TimestepBlock):
             h = self.out_layers(h)
 
         # add skip connections
+        print("in resblock:", h.shape, x.shape)
+        print(self.skip_connection)
         out = self.skip_connection(x) + h
         # 只有当skip存在，即使用
         if self.use_conv:
@@ -371,6 +376,8 @@ class AttentionBlock(nn.Module):
         )
 
     def _forward(self, x):
+        if isinstance(x, tuple):
+            x = x[0]
         b, c, *spatial = x.shape
         x = x.reshape(b, c, -1)
         qkv = self.qkv(self.norm(x))

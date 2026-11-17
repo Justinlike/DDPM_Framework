@@ -110,50 +110,51 @@ class WavUNetModel(nn.Module):
                 input_block_chans.append(ch)
 
             # adding downsampling operation
-            out_ch = ch
-            layers = []
-            layers.append(
-                ResBlock(
-                    ch,
-                    time_embed_dim,
-                    dropout,
-                    out_channels = out_ch,
-                    dims = dims,
-                    use_checkpoint = use_checkpoint,
-                    use_scale_shift_norm = use_scale_shift_norm,
-                    down = True,
-                    num_groups = num_groups,
-                    resample_2d = resample_2d,
-                    use_freq = self.use_freq,
-                    use_conv = self.use_conv,
-                )
-                if resblock_updown # default False
-                else DownSample(
-                    ch,
-                    dims=dims,
-                    out_channels=out_ch,
-                    resample_2d=resample_2d,
-                    use_conv=self.use_conv,
-                    use_freq=self.use_freq
-                )
-            )
-            self.input_blocks.append(TimestepEmbeddingSequential(*layers))
-
-            layers = []
-            if self.progressive_input == "residual":
+            # 在最后一层下采样层，不做下采样，待修改
+            if level != len(channel_mult)-1:
+                out_ch = ch
+                layers = []
                 layers.append(
-                    WaveletDownsample(
-                        in_ch = input_pyramid_channels,
-                        out_ch = input_pyramid_channels,
-                    )    
+                    ResBlock(
+                        ch,
+                        time_embed_dim,
+                        dropout,
+                        out_channels = out_ch,
+                        dims = dims,
+                        use_checkpoint = use_checkpoint,
+                        use_scale_shift_norm = use_scale_shift_norm,
+                        down = True,
+                        num_groups = num_groups,
+                        resample_2d = resample_2d,
+                        use_freq = self.use_freq,
+                        use_conv = self.use_conv,
+                    )
+                    if resblock_updown # default False
+                    else DownSample(
+                        ch,
+                        dims=dims,
+                        out_channels=out_ch,
+                        resample_2d=resample_2d,
+                        use_conv=self.use_conv,
+                        use_freq=self.use_freq
+                    )
                 )
-                input_pyramid_channels = out_ch
-            self.input_blocks.append(TimestepEmbeddingSequential(*layers))
 
-            ch = out_ch
-            input_block_chans.append(ch)
-            ds *= 2
-            self._feature_size += ch
+                # 下采样分支, 添加金字塔残差
+                if self.progressive_input == "residual":
+                    layers.append(
+                        WaveletDownsample(
+                            in_ch = input_pyramid_channels,
+                            out_ch = out_ch,
+                        )    
+                    )
+                    input_pyramid_channels = out_ch
+                self.input_blocks.append(TimestepEmbeddingSequential(*layers))
+
+                ch = out_ch
+                input_block_chans.append(ch)
+                ds *= 2
+                self._feature_size += ch
 
         self.input_block_chans_bk = input_block_chans[:]
 
@@ -168,7 +169,7 @@ class WavUNetModel(nn.Module):
                 dims = dims,
                 use_checkpoint = use_checkpoint,
                 use_scale_shift_norm = use_scale_shift_norm,
-                down = True,
+                # down = True,
                 num_groups = num_groups,
                 resample_2d = resample_2d,
                 use_freq = self.use_freq,
@@ -197,6 +198,7 @@ class WavUNetModel(nn.Module):
         )
         self._feature_size += ch
 
+        skip_channels = input_block_chans.copy()
         #################################
         # UPWARD path - feature mapping #
         #################################
@@ -204,11 +206,28 @@ class WavUNetModel(nn.Module):
         for level, mult in list(enumerate(channel_mult))[::-1]:
             for i in range(num_res_blocks+1):                                          # Adding Residual blocks
                 if not i == num_res_blocks:
+
+                    # 每次循环创建新的列表，避免复用上一块
+                    layers = []
+
+                    # 与 forward 中 hs.pop() 一一对应
+                    skip_ch = skip_channels.pop()
+                    mid_ch = model_channels * mult
+
+                    if self.additive_skips:
+                        if ch != skip_ch:
+                            raise ValueError(
+                                f"相加跳连要求通道一致，当前 ch={ch}, skip_ch={skip_ch}"
+                            )
+                        block_in_ch = ch
+                    else:
+                        # cat([h, new_hs], dim=1) 后的实际通道数
+                        block_in_ch = ch + skip_ch
                     mid_ch = model_channels * mult
 
                     layers = [
                         ResBlock(
-                            ch,
+                            block_in_ch,
                             time_embed_dim,
                             dropout,
                             out_channels=mid_ch,
@@ -341,7 +360,7 @@ class WavUNetModel(nn.Module):
         self.hs_shape = []
 
         for module in self.input_blocks:
-            print("module:", module)
+            print("input module:", module)
             if not isinstance(module[0], WaveletDownsample):
                 h = module(h, emb)
                 skip = None
@@ -350,22 +369,46 @@ class WavUNetModel(nn.Module):
                 hs.append(h)
                 self.hs_shape.append(h.shape)
             else:
-                print("input_pyramid:", input_pyramid.shape, emb.shape)
+                # 下采样会有连续两个，先做DownSample，在做WaveletDownsample
+                # 下采样主干 DownSample: h = module(h, emb)
+                # 金字塔分支 WaveletDownsample: input_pyramid = module(input_pyramid, emb)
+                # h = input_pyramid + h
+                # print("input_pyramid:", input_pyramid.shape, emb.shape)
                 input_pyramid = module(input_pyramid, emb)
                 print(input_pyramid.shape, h.shape)
                 input_pyramid = input_pyramid + h
                 h = input_pyramid
 
         for module in self.middle_block:
-            h = module(h, emb)
+            # h = module(h, emb)
+            # h = module(h)
+            print("middle module:", module)
+            if isinstance(module, ResBlock):
+                # resblock
+                h = module(h, emb)
+            else:
+                # attention block
+                h = module(h)
             if isinstance(h, tuple):
                 h, skip = h
 
-        for module in self.output_blocks:
-            new_hs = hs.pop()
-            if new_hs:
-                skip = new_hs
+        # for _ in hs:
+        #     if _ is not None:
+        #         print(_.shape)
+        #     else:
+        #         print(_)
 
+        for module in self.output_blocks:
+            print("output module:", module)
+            new_hs = hs.pop()
+
+            if new_hs is not None:
+                skip = new_hs
+            if h is not None and isinstance(h, tuple):
+                h = h[0]
+            assert h.shape[2:] == new_hs.shape[2:], (
+                f"skip 空间尺寸不匹配: h={h.shape}, skip={new_hs.shape}"
+            )
             # use additive skip connection
             if self.additive_skips:
                 h = (h + new_hs) / np.sqrt(2.0)
@@ -381,6 +424,7 @@ class WavUNetModel(nn.Module):
                 else:
                     h = (h, skip)
             else:
+                print("h shape:", h.shape, "new_hs shape:", new_hs.shape)
                 h = torch.cat([h, new_hs], dim=1)
 
             h = module(h, emb)
@@ -394,7 +438,7 @@ class WavUNetModel(nn.Module):
 if __name__ == "__main__":
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    x = torch.randn(1, 1, 8, 512, 512).to(device)
+    x = torch.randn(1, 1, 16, 256, 256).to(device)
     timesteps = torch.tensor([1], device=device)
     # x = torch.randn(1, 1, 8, 64, 64, device=device)
     print(f"input shape {x.shape}")
@@ -405,9 +449,9 @@ if __name__ == "__main__":
         model_channels=64,
         out_channels=1,
         num_res_blocks=2,
-        attention_resolutions=[4, 8, 16],
+        attention_resolutions=[],
         dropout=0.1,
-        channel_mult=(1, 2, 4, 8),
+        channel_mult=(1, 2, 4),
         conv_resample=True,
         dims=3,
         num_classes=None,
