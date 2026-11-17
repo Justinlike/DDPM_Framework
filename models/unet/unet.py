@@ -84,10 +84,31 @@ class TimestepEmbeddingSequential(nn.Sequential, TimestepBlock):
             # print("cuDNN enabled:", torch.backends.cudnn.enabled)
 
             # check if the layer is TimestepBlock, pass the emb to it.
-            if isinstance(layer, TimestepBlock):
-                x = layer(x, emb)
+            # if isinstance(layer, TimestepBlock):
+            #     x = layer(x, emb)
+            # else:
+            #     x = layer(x)
+            
+            if isinstance(x, tuple) and not isinstance(layer, UpSample):
+                features, details = x
+
+                if isinstance(layer, TimestepBlock):
+                    features = layer(features, emb)
+                else:
+                    features = layer(features)
+
+                # 当前普通 ResBlock 可能返回 (out, None)
+                if isinstance(features, tuple):
+                    features, new_details = features
+                    if new_details is not None:
+                        details = new_details
+
+                x = (features, details)
             else:
-                x = layer(x)
+                if isinstance(layer, TimestepBlock):
+                    x = layer(x, emb)
+                else:
+                    x = layer(x)
         return x
 
 class DownSample(nn.Module):
@@ -140,15 +161,14 @@ class UpSample(nn.Module):
             self.conv = conv_nd(dims, self.channels, self.out_channels, 3, padding=1)
 
     def forward(self, x):
+        if isinstance(x, tuple):
+            x, skip = x[0], x[1]
         assert x.shape[1] == self.channels, f"In UpSampling Module expected input with {self.channels} channels, got {x.shape[1]} channels instead"
         # optional: for 3d image, only upsample the height and width, keep the depth unchanged
         # 考虑到医学图像各向异性，深度或许不需要采样。
-        if isinstance(x, tuple): # 如果是 DWT 输出的 tuple，先取出 LLL 分量进行上采样
-            skip = x[1]
-            x = x[0]
-        assert x.shape[1] == self.channels
 
         if self.use_freq:
+            assert skip is None, f"Expected skip connections for IDWT, got {skip}"
             x = self.idwt(3.*x, skip[0], skip[1], skip[2], skip[3], skip[4], skip[5], skip[6])
         elif self.dims == 3 and self.resample_2d:
             # 只对长、宽维度进行上采样，深度维保持不变

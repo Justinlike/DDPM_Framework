@@ -112,6 +112,7 @@ class WavUNetModel(nn.Module):
             # adding downsampling operation
             # 在最后一层下采样层，不做下采样，待修改
             if level != len(channel_mult)-1:
+            # if True:
                 out_ch = ch
                 layers = []
                 layers.append(
@@ -139,8 +140,11 @@ class WavUNetModel(nn.Module):
                         use_freq=self.use_freq
                     )
                 )
+                self.input_blocks.append(TimestepEmbeddingSequential(*layers))
 
+                # 两个下采样分开添加，为了处理残差分支输入时检查tuple
                 # 下采样分支, 添加金字塔残差
+                layers = []
                 if self.progressive_input == "residual":
                     layers.append(
                         WaveletDownsample(
@@ -203,56 +207,53 @@ class WavUNetModel(nn.Module):
         # UPWARD path - feature mapping #
         #################################
         self.output_blocks = nn.ModuleList([])
+        # [0:1, 1:2, 2:4] -> [2:4, 1:2, 0:1]
         for level, mult in list(enumerate(channel_mult))[::-1]:
             for i in range(num_res_blocks+1):                                          # Adding Residual blocks
-                if not i == num_res_blocks:
+                # 前两层resblock，最后一层是upsample
 
-                    # 每次循环创建新的列表，避免复用上一块
-                    layers = []
+                layers = []
+                # 与 forward 中 hs.pop() 一一对应
+                skip_ch = skip_channels.pop()
+                mid_ch = model_channels * mult
 
-                    # 与 forward 中 hs.pop() 一一对应
-                    skip_ch = skip_channels.pop()
-                    mid_ch = model_channels * mult
+                if self.additive_skips:
+                    assert ch == skip_ch, f"additive_skips need the same channels: ch={ch}, skip_ch={skip_ch}"
+                    block_in_ch = ch
+                else:
+                    # cat([h, new_hs], dim=1) 后的实际通道数
+                    block_in_ch = ch + skip_ch
 
-                    if self.additive_skips:
-                        if ch != skip_ch:
-                            raise ValueError(
-                                f"相加跳连要求通道一致，当前 ch={ch}, skip_ch={skip_ch}"
-                            )
-                        block_in_ch = ch
-                    else:
-                        # cat([h, new_hs], dim=1) 后的实际通道数
-                        block_in_ch = ch + skip_ch
-                    mid_ch = model_channels * mult
-
-                    layers = [
-                        ResBlock(
-                            block_in_ch,
-                            time_embed_dim,
-                            dropout,
-                            out_channels=mid_ch,
-                            dims=dims,
+                layers = [
+                    ResBlock(
+                        block_in_ch,
+                        time_embed_dim,
+                        dropout,
+                        out_channels=mid_ch,
+                        dims=dims,
+                        use_checkpoint=use_checkpoint,
+                        use_scale_shift_norm=use_scale_shift_norm,
+                        num_groups=self.num_groups,
+                        resample_2d=resample_2d,
+                        use_freq=self.use_freq,
+                        use_conv=self.use_conv,
+                    )
+                ]
+                # Adding Attention layers
+                if ds in attention_resolutions:
+                    layers.append(
+                        AttentionBlock(
+                            mid_ch,
                             use_checkpoint=use_checkpoint,
-                            use_scale_shift_norm=use_scale_shift_norm,
+                            num_heads=num_heads_upsample,
+                            num_head_channels=num_head_channels,
+                            use_new_attention_order=use_new_attention_order,
                             num_groups=self.num_groups,
-                            resample_2d=resample_2d,
-                            use_freq=self.use_freq,
-                            use_conv=self.use_conv,
                         )
-                    ]
-                    if ds in attention_resolutions:                                         # Adding Attention layers
-                        layers.append(
-                            AttentionBlock(
-                                mid_ch,
-                                use_checkpoint=use_checkpoint,
-                                num_heads=num_heads_upsample,
-                                num_head_channels=num_head_channels,
-                                use_new_attention_order=use_new_attention_order,
-                                num_groups=self.num_groups,
-                            )
-                        )
-                    ch = mid_ch
-                else:                                                                       # Adding upsampling operation
+                    )
+                ch = mid_ch
+                # Adding upsampling operation
+                if level and i == num_res_blocks:
                     out_ch = ch
                     layers.append(
                         ResBlock(
@@ -284,6 +285,8 @@ class WavUNetModel(nn.Module):
                 self._feature_size += ch
                 mid_ch = ch
         
+        assert not skip_channels, f"skip_channels should be empty: {skip_channels}"
+
         ################
         # Out ResBlock #
         ################
@@ -353,7 +356,9 @@ class WavUNetModel(nn.Module):
         :param zemb: an [N] Tensor of labels, if class-conditional.
         :return: an [N x C x ...] Tensor of outputs.
         """
-        hs = []
+        hs = [] # 记录空间下采样
+        wavelet_hs = [] # 记录频域下采样
+
         input_pyramid = x
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
         h = x
@@ -366,6 +371,7 @@ class WavUNetModel(nn.Module):
                 skip = None
                 if isinstance(h, tuple):
                     h, skip = h
+                    wavelet_hs.append(skip) if skip is not None and self.use_freq else None
                 hs.append(h)
                 self.hs_shape.append(h.shape)
             else:
@@ -391,21 +397,30 @@ class WavUNetModel(nn.Module):
                 h = module(h)
             if isinstance(h, tuple):
                 h, skip = h
+                # 中间层的skip有什么用？
 
         # for _ in hs:
         #     if _ is not None:
         #         print(_.shape)
         #     else:
         #         print(_)
+        # for _ in wavelet_hs:
+        #     if isinstance(_, tuple):
+        #         print("wavelet_hs:", len(_))
+        #     else:
+        #         print("wavelet_hs:", _.shape)
 
         for module in self.output_blocks:
             print("output module:", module)
             new_hs = hs.pop()
+            new_wavelet_hs = wavelet_hs.pop() if wavelet_hs else None
 
-            if new_hs is not None:
-                skip = new_hs
+            # if new_hs is not None:
+            #     skip = new_hs
+
             if h is not None and isinstance(h, tuple):
                 h = h[0]
+
             assert h.shape[2:] == new_hs.shape[2:], (
                 f"skip 空间尺寸不匹配: h={h.shape}, skip={new_hs.shape}"
             )
@@ -428,6 +443,23 @@ class WavUNetModel(nn.Module):
                 h = torch.cat([h, new_hs], dim=1)
 
             h = module(h, emb)
+            # # unpack the module, for match the upsample's input.
+            # for layer in module:
+            #     # resblock may return [h, None]
+            #     if isinstance(h, tuple):
+            #         h = h[0]
+            #     if isinstance(layer, UpSample):
+            #         if layer.use_freq:
+            #             if not new_wavelet_hs:
+            #                 raise ValueError("没有可供当前上采样使用的高频子带")
+            #             new_wavelet_hs = wavelet_hs.pop()
+            #             h = layer((h, new_wavelet_hs))
+            #         else:
+            #             h = layer(h)
+            #     elif isinstance(layer, ResBlock):
+            #         h = layer(h, emb)
+            #     else:
+            #         h = layer(h)
 
         for module in self.out_res:
             h = module(h, emb)
