@@ -32,8 +32,8 @@ use_ema: false
 mixed_precision: bf16
 gradient_accumulation_steps: 1 # 1
 prediction_type: sample
-max_train_steps: 100 # 100 000
-save_step_freq: 50 # 200
+max_train_steps: 100000 # 100 000
+save_step_freq: 200 # 200
 
 #evaluate 
 evaluate: false
@@ -48,7 +48,7 @@ sample_steps: 50 # 50 default
 sample_method: heun
 
 #dataset
-base_data_dir: /data/jzk/CT/data_5
+base_data_dir: /data/jzk/CT/data_522
 dataset_name: ct3d
 resolution:
  - 256

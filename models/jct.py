@@ -10,6 +10,7 @@ from monai.apps.generation.maisi.networks.autoencoderkl_maisi import Autoencoder
 from monai.apps.generation.maisi.networks.diffusion_model_unet_maisi import DiffusionModelUNetMaisi
 import time
 
+# Wavelet Flow Matching using UNet
 class JCT(nn.Module):
     def __init__(self, config, model=None, num_timesteps=50, method = "heun"):
         super().__init__()

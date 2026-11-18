@@ -112,6 +112,7 @@ class WavUNetModel(nn.Module):
             # adding downsampling operation
             # 在最后一层下采样层，不做下采样，待修改
             if level != len(channel_mult)-1:
+            # # 每个level都加downsample
             # if True:
                 out_ch = ch
                 layers = []
@@ -257,7 +258,10 @@ class WavUNetModel(nn.Module):
                     )
                 ch = mid_ch
                 # Adding upsampling operation
-                if level and i == num_res_blocks:
+                # 每层都加
+                if i == num_res_blocks:
+                # # 最后一层不加
+                # if level and i == num_res_blocks:
                     out_ch = ch
                     layers.append(
                         ResBlock(
@@ -408,11 +412,11 @@ class WavUNetModel(nn.Module):
         #         print(_.shape)
         #     else:
         #         print(_)
-        # for _ in wavelet_hs:
-        #     if isinstance(_, tuple):
-        #         print("wavelet_hs:", len(_))
-        #     else:
-        #         print("wavelet_hs:", _.shape)
+        for _ in wavelet_hs:
+            if isinstance(_, tuple):
+                print("wavelet_hs:", len(_))
+            else:
+                print("wavelet_hs:", _.shape)
 
         for module in self.output_blocks:
             # print("output module:", module)

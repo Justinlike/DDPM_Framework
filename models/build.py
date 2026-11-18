@@ -34,6 +34,9 @@ def build_model(cfg):
             cfg.model_config,
             resolve=True,
         )
+        model_kwargs.update(
+            num_classes=None
+        )
         unet = UNet(**model_kwargs)
 
         model = JCT(config=None, model=unet, num_timesteps=sample_steps, method=sample_method)
