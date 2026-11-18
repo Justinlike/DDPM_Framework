@@ -114,6 +114,7 @@ class IDWTFunction_2D(Function):
 
 class DWTFunction_3D(Function):
     @staticmethod
+    @torch.amp.custom_fwd(device_type="cuda", cast_inputs=torch.float32)
     def forward(ctx, input,
                 matrix_Low_0, matrix_Low_1, matrix_Low_2,
                 matrix_High_0, matrix_High_1, matrix_High_2):
@@ -136,6 +137,7 @@ class DWTFunction_3D(Function):
         return LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH
 
     @staticmethod
+    @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, grad_LLL, grad_LLH, grad_LHL, grad_LHH,
                  grad_HLL, grad_HLH, grad_HHL, grad_HHH):
         matrix_Low_0, matrix_Low_1, matrix_Low_2, matrix_High_0, matrix_High_1, matrix_High_2 = ctx.saved_variables
@@ -158,6 +160,7 @@ class DWTFunction_3D(Function):
 
 class IDWTFunction_3D(Function):
     @staticmethod
+    @torch.amp.custom_fwd(device_type="cuda", cast_inputs=torch.float32)
     def forward(ctx, input_LLL, input_LLH, input_LHL, input_LHH,
                 input_HLL, input_HLH, input_HHL, input_HHH,
                 matrix_Low_0, matrix_Low_1, matrix_Low_2,
@@ -181,6 +184,7 @@ class IDWTFunction_3D(Function):
         return output
 
     @staticmethod
+    @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
         matrix_Low_0, matrix_Low_1, matrix_Low_2, matrix_High_0, matrix_High_1, matrix_High_2 = ctx.saved_variables
         grad_L = torch.matmul(matrix_Low_0, grad_output)

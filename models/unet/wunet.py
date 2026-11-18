@@ -217,6 +217,10 @@ class WavUNetModel(nn.Module):
                 skip_ch = skip_channels.pop()
                 mid_ch = model_channels * mult
 
+                # 小波上采样前，对齐对应编码层的高频子带通道
+                if self.use_freq and level > 0 and i == num_res_blocks:
+                    mid_ch = model_channels * channel_mult[level - 1]
+
                 if self.additive_skips:
                     assert ch == skip_ch, f"additive_skips need the same channels: ch={ch}, skip_ch={skip_ch}"
                     block_in_ch = ch
@@ -365,7 +369,7 @@ class WavUNetModel(nn.Module):
         self.hs_shape = []
 
         for module in self.input_blocks:
-            print("input module:", module)
+            # print("input module:", module)
             if not isinstance(module[0], WaveletDownsample):
                 h = module(h, emb)
                 skip = None
@@ -388,7 +392,7 @@ class WavUNetModel(nn.Module):
         for module in self.middle_block:
             # h = module(h, emb)
             # h = module(h)
-            print("middle module:", module)
+            # print("middle module:", module)
             if isinstance(module, ResBlock):
                 # resblock
                 h = module(h, emb)
@@ -411,7 +415,7 @@ class WavUNetModel(nn.Module):
         #         print("wavelet_hs:", _.shape)
 
         for module in self.output_blocks:
-            print("output module:", module)
+            # print("output module:", module)
             new_hs = hs.pop()
             # new_wavelet_hs = wavelet_hs.pop() if wavelet_hs else None
 
@@ -480,22 +484,24 @@ class WavUNetModel(nn.Module):
         return self.out(h)
 
 if __name__ == "__main__":
+    from torchprofile import profile_macs
+
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    x = torch.randn(1, 1, 16, 128, 128).to(device)
+    x = torch.randn(1, 1, 16, 256, 256).to(device)
     timesteps = torch.tensor([1], device=device)
     # x = torch.randn(1, 1, 8, 64, 64, device=device)
     print(f"input shape {x.shape}")
 
     model = WavUNetModel(
-        image_size=128,
+        image_size=256,
         in_channels=1,
         model_channels=64,
         out_channels=1,
         num_res_blocks=2,
         attention_resolutions=[],
         dropout=0.1,
-        channel_mult=(1, 2, 2, 4),
+        channel_mult=(1, 2, 2, 4, 8),
         conv_resample=True,
         dims=3,
         num_classes=None,
@@ -519,10 +525,23 @@ if __name__ == "__main__":
     # print(model)
     model.eval()
     
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(
+        p.numel() for p in model.parameters() if p.requires_grad
+    )
+
+    with torch.no_grad():
+        macs = profile_macs(model, args=(x, timesteps))
+    
+    # 采用一次乘法 + 一次加法 = 2 FLOPs 的统计口径
+    estimated_flops = 2 * macs
+
     with torch.no_grad():
         out = model(x, timesteps=timesteps)
     
-    print(1)
     print("Output shape:", out.shape)
-    print(1)
 
+    print(f"Total parameters:     {total_params / 1e6:.3f} M")
+    print(f"Trainable parameters: {trainable_params / 1e6:.3f} M")
+    print(f"MACs:                 {macs / 1e9:.3f} GMACs")
+    print(f"Estimated FLOPs:      {estimated_flops / 1e9:.3f} GFLOPs")

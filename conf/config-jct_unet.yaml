@@ -4,10 +4,9 @@ metrics:
   - mse
   - psnr
   - ssim
-  - gmsd
 nrow: 6
 output_dir: output
-job_name: jct_myunet_DHW_Img512_Batch1
+job_name: jct_unet_DHW_Img256_Batch1
 excluding_modules: null
 
 # tracker
@@ -49,27 +48,27 @@ sample_steps: 50 # 50 default
 sample_method: heun
 
 #dataset
-base_data_dir: /data/jzk/CT/data_522
+base_data_dir: /data/jzk/CT/data_5
 dataset_name: ct3d
 resolution:
  - 256
  - 256
  - 8
-train_batch_size: 4
-test_batch_size: 4
+train_batch_size: 1
+test_batch_size: 1
 num_workers: 16
 # 限制的是baser中数据进入模型的范围，最终计算metric的数据范围都是[0, 1]
 data_range: m11 # option: 0.0,1.0 or -1.0,1.0 
 
 model_config:
-  image_size: 512
+  image_size: 256
   in_channels: 1
   model_channels: 64
   out_channels: 1
   num_res_blocks: 2
   attention_resolutions: []
   dropout: 0.1
-  channel_mult: [1, 2, 2, 4, 8]
+  channel_mult: [1, 2, 2, 4]
   conv_resample: True
   dims: 3
   num_classes: None

@@ -166,9 +166,10 @@ class UpSample(nn.Module):
         assert x.shape[1] == self.channels, f"In UpSampling Module expected input with {self.channels} channels, got {x.shape[1]} channels instead"
         # optional: for 3d image, only upsample the height and width, keep the depth unchanged
         # 考虑到医学图像各向异性，深度或许不需要采样。
-        
+        # print(x.shape)
+        # print(skip[0].shape)
         if self.use_freq:
-            assert skip is None, f"Expected skip connections for IDWT, got {skip}"
+            assert skip is not None, f"Expected skip connections for IDWT, got {skip}"
             # print(skip)
             x = self.idwt(3.*x, skip[0], skip[1], skip[2], skip[3], skip[4], skip[5], skip[6])
         elif self.dims == 3 and self.resample_2d:
@@ -830,11 +831,11 @@ class UNet(nn.Module):
         return out
 
 if __name__ == "__main__":
-    # from torchprofile import profile_macs
+    from torchprofile import profile_macs
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    x = torch.randn(1, 1, 8, 512, 512).to(device)
+    x = torch.randn(1, 1, 512, 512, 8).to(device)
     timesteps = torch.tensor([1], device=device)
     # x = torch.randn(1, 1, 8, 64, 64, device=device)
     print(f"input shape {x.shape}")
@@ -900,6 +901,28 @@ if __name__ == "__main__":
 
     print("Output shape:", out.shape)
     # 有个地方不动了
+
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(
+        p.numel() for p in model.parameters() if p.requires_grad
+    )
+
+    with torch.no_grad():
+        macs = profile_macs(model, args=(x, timesteps))
+    
+    # 采用一次乘法 + 一次加法 = 2 FLOPs 的统计口径
+    estimated_flops = 2 * macs
+
+    with torch.no_grad():
+        out = model(x, timesteps=timesteps)
+    
+    print("Output shape:", out.shape)
+
+    print(f"Total parameters:     {total_params / 1e6:.3f} M")
+    print(f"Trainable parameters: {trainable_params / 1e6:.3f} M")
+    print(f"MACs:                 {macs / 1e9:.3f} GMACs")
+    print(f"Estimated FLOPs:      {estimated_flops / 1e9:.3f} GFLOPs")
+    
         
 
 
