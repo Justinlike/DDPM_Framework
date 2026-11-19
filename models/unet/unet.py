@@ -550,6 +550,7 @@ class UNet(nn.Module):
         self.additive_skips = additive_skips
         self.dims = dims
         time_embed_dim = model_channels * 4
+        
         self.time_embed = nn.Sequential(
             nn.Linear(model_channels, time_embed_dim),
             nn.SiLU(),

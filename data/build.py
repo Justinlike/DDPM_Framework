@@ -74,7 +74,7 @@ def build_dataset(
     data_type = dataset_type_dict[dataset_type]
     dataset_dir = base_data_dir
     return (
-        data_type(dataset_dir=dataset_dir, split="train", resolution=resolution, seed=seed, **kwargs),
-        data_type(dataset_dir=dataset_dir, split="test", resolution=resolution, seed=seed, **kwargs),
-        data_type(dataset_dir=dataset_dir, split="test", resolution=resolution, seed=seed, **kwargs)
+        data_type(dataset_dir=dataset_dir, split="train", resolution=resolution, seed=seed, num_workers=0, **kwargs),
+        data_type(dataset_dir=dataset_dir, split="test", resolution=resolution, seed=seed, num_workers=0, **kwargs),
+        data_type(dataset_dir=dataset_dir, split="test", resolution=resolution, seed=seed, num_workers=0, **kwargs)
     )

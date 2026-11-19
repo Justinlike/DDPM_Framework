@@ -6,7 +6,7 @@ metrics:
   - ssim
 nrow: 6
 output_dir: output
-job_name: jct_unet_Img256_256_16_Batch2
+job_name: jct_unet_downHW_skipConcat_Img256_256_16_Batch2
 excluding_modules: null
 
 # tracker
@@ -82,4 +82,5 @@ model_config:
   use_new_attention_order: False
   num_groups: 32
   bottleneck_attention: True
-  additive_skips: True
+  additive_skips: False
+  resample_2d: True

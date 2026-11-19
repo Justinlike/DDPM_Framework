@@ -18,23 +18,23 @@ def data_transform_3d():
     def resize_hw(image):
         B, H, W, D = image.shape
         return T.Resize((256, 256, D), image_interpolation='linear')(image)
-
+    
     data_transform = {
         "train": T.Compose([
             # # tio 中，resize的-1表示维度不变
-            # tio.Lambda(resize_hw),
-            T.Resize((256, 256, -1), image_interpolation='linear'),
+            tio.Lambda(resize_hw),
+            # T.Resize((256, 256, -1), image_interpolation='linear'),
             T.RandomFlip(),
             tio.Lambda(custom_standardize),
         ]),
         "val": T.Compose([
-            # tio.Lambda(resize_hw),
-            T.Resize((256, 256, -1), image_interpolation='linear'),
+            tio.Lambda(resize_hw),
+            # T.Resize((256, 256, -1), image_interpolation='linear'),
             tio.Lambda(custom_standardize),
         ]),
         "test": T.Compose([
-            # tio.Lambda(resize_hw),
-            T.Resize((256, 256, -1), image_interpolation='linear'),
+            tio.Lambda(resize_hw),
+            # T.Resize((256, 256, -1), image_interpolation='linear'),
             tio.Lambda(custom_standardize),
         ]),
     }
@@ -154,11 +154,11 @@ class CT3D(BaseDataset):
         return self.queue_set[index]
     
 if __name__ == '__main__':
-    dataset = CT3D(dataset_dir='/data/jzk/CT/data_cba', split="train", resolution=(256,256,2), seed=42)
+    dataset = CT3D(dataset_dir='/data/jzk/CT/data_cba', split="train", resolution=(256,256,2), seed=42, num_workers=2, queue_length=16, samples_per_volume=16)
+    print(f"Dataset length: {len(dataset)}")
 
     for i in dataset.dataset:
         #x = i['imgs'].data
-        # print(i['imgs'].shape)
         # 3D
         # (1, 512, 512, 2)
         # torch.Size([1, 512, 512, 2]) <built-in method max of Tensor object at 0x7f79b24a5b70> <built-in method min of Tensor object at 0x7f79b24a5b70>
@@ -166,5 +166,21 @@ if __name__ == '__main__':
         # 2D
         # [2, 1, 512, 512]
         print(i.keys())
+        # print(i['imgs'].shape)
         print(i["ID"], i['imgs'].data.shape, i['imgs'].data.max(), i['imgs'].data.min())
         # break
+
+    # for index in range(min(5, len(dataset.dataset))):
+    #     original = dataset.subjects[index]
+    #     transformed = dataset.dataset[index]
+
+    #     print("ID:", original["ID"])
+    #     for key in ("imgs", "labels"):
+    #         path = original[key].path
+    #         print(
+    #             key,
+    #             "\n  path:", path,
+    #             "\n  nibabel shape:", nib.load(str(path)).shape,
+    #             "\n  TorchIO before:", original[key].shape,
+    #             "\n  TorchIO after:", transformed[key].shape,
+    #         )
