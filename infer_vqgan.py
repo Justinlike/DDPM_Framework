@@ -127,80 +127,6 @@ if __name__ == "__main__":
             "input.nii.gz",
         )
         
-        # with torch.inference_mode():
-        #     z_quantized, indices = model.encode(
-        #         img,
-        #         quantize=True,
-        #         include_embeddings=True,
-        #     )
-        #     print("z_quantized shape:", z_quantized.shape)
-        #     # print("indices shape:", indices.shape)
-
-        #     # 整幅 latent 和重建结果放在 CPU，每次只搬一个块到 GPU。
-        #     reconstruction = torch.empty(img.shape, dtype=torch.float32, device="cpu")
-        #     latent = z_quantized.cpu()
-        #     del z_quantized, indices, img
-
-        #     core, halo = 32, 8
-        #     d_scale, h_scale, w_scale = 2, 4, 4
-        #     depth, height, width = latent.shape[-3:]
-
-        #     for h0 in range(0, height, core):
-        #         h1 = min(h0 + core, height)
-        #         ph0 = max(0, h0 - halo)
-        #         ph1 = min(height, h1 + halo)
-
-        #         for w0 in range(0, width, core):
-        #             w1 = min(w0 + core, width)
-        #             pw0 = max(0, w0 - halo)
-        #             pw1 = min(width, w1 + halo)
-
-        #             tile = latent[..., ph0:ph1, pw0:pw1].contiguous()
-        #             tile = tile.to(device=parameter.device)
-
-        #             with torch.autocast(device_type="cuda", dtype=torch.float16):
-        #                 decoded = model.decoder(model.post_vq_conv(tile))
-
-        #             expected_shape = (
-        #                 depth * d_scale,
-        #                 (ph1 - ph0) * h_scale,
-        #                 (pw1 - pw0) * w_scale,
-        #             )
-        #             if tuple(decoded.shape[-3:]) != expected_shape:
-        #                 raise RuntimeError(
-        #                     f"解码块尺寸为 {tuple(decoded.shape[-3:])}，"
-        #                     f"预期为 {expected_shape}，请检查 decoder 的空间放大倍率。"
-        #                 )
-
-        #             decoded_core = decoded[
-        #                 ...,
-        #                 (h0 - ph0) * h_scale:(h1 - ph0) * h_scale,
-        #                 (w0 - pw0) * w_scale:(w1 - pw0) * w_scale,
-        #             ].cpu().float()
-
-        #             reconstruction[
-        #                 ...,
-        #                 h0 * h_scale:h1 * h_scale,
-        #                 w0 * w_scale:w1 * w_scale,
-        #             ] = decoded_core
-
-        #             del tile, decoded
-
-        #     print("reconstruction shape:", reconstruction.shape)
-        #     # volume = (
-        #     #     reconstruction[0, 0]
-        #     #     .permute(1, 2, 0)  # [D,H,W] → [H,W,D]
-        #     #     .detach()
-        #     #     .cpu()
-        #     #     .numpy()
-        #     # )
-        #     # nib.save(nib.Nifti1Image(volume, affine),"reconstruction.nii.gz",)
-        #     psnr = peak_signal_noise_ratio(reference.numpy()[0, 0], reconstruction.numpy()[0, 0])
-        #     psnr_list.append(psnr)
-        #     print(f"PSNR: {psnr:.4f}")
-
-        
-
         with torch.inference_mode():
 
             z_quantized, indices = model.encode(
@@ -211,129 +137,111 @@ if __name__ == "__main__":
             print("z_quantized shape:", z_quantized.shape)
             # print("indices shape:", indices.shape)
     
-            # 整幅 latent 和重建结果放在 CPU，每次只搬一个块到 GPU。
-            reconstruction = torch.empty(img.shape, dtype=torch.float32, device="cpu")
-            latent = z_quantized.cpu()
+            # 整图解码：输入须与 post_vq_conv 的设备和精度一致。
+            decode_parameter = next(model.post_vq_conv.parameters())
+            latent = z_quantized.to(
+                device=decode_parameter.device, dtype=decode_parameter.dtype,
+            )
             del z_quantized, indices, img
 
-            with torch.autocast(device_type="cuda", dtype=torch.float16):
-                # 示例。若你第 119 行用的是其他输入变换，保留实际写法。
+            with torch.autocast(
+                device_type=decode_parameter.device.type,
+                dtype=torch.float16,
+                enabled=decode_parameter.device.type == "cuda",
+            ):
                 reconstruction = model.decoder(model.post_vq_conv(latent))
+            del latent
 
             # 先移到 CPU，再转 float32，避免在 GPU 上额外创建一份 FP32 输出。
             reconstruction = reconstruction.cpu().float()
-            
-            # # 方法一：解码量化后的向量
-            # reconstruction = model.decoder(
-            #     model.post_vq_conv(z_quantized)
-            # )
-            # print("reconstruction shape:", reconstruction.shape)  # [B, C, D, H, W]
-    
-            # 方法二：解码码本索引，结果与方法一对应
-            reconstruction = model.decode(indices)
-            print("reconstruction shape:", reconstruction.shape)  # [B, C, D, H, W]
+            print("reconstruction shape:", reconstruction.shape)
+            volume = reconstruction[0, 0].permute(1, 2, 0).numpy()
+            nib.save(nib.Nifti1Image(volume, affine), "reconstruction.nii.gz")
 
-        latent = generate_latent(
-            model, img,
-            layout="HWD",
-            output_layout="HWD",
-            quantize=False,  # True 则返回量化后的码本向量
-        )
-        print("latent shape:", latent.shape)
-
+            psnr = peak_signal_noise_ratio(reference.numpy()[0, 0], reconstruction.numpy()[0, 0])
+            psnr_list.append(psnr)
+            print(f"PSNR: {psnr:.4f}")
         break
 
-    # for batch in train_dataloader:
-    #     img = batch["data"].to(
-    #         device=parameter.device,  # 跟随模型，当前是 cuda:2
-    #         dtype=parameter.dtype,
-    #         non_blocking=True,
-    #     )
-    #     print("ID", batch["id"], "img shape:", img.shape)  # [B, C, D, H, W]
-    #     reference = img.cpu().float() # [B, C, D, H, W]
+    for batch in train_dataloader:
+        img = batch["data"].to(
+            device=parameter.device,  # 跟随模型，当前是 cuda:2
+            dtype=parameter.dtype,
+            non_blocking=True,
+        )
+        print("ID", batch["id"], "img shape:", img.shape)  # [B, C, D, H, W]
+        reference = img.cpu().float() # [B, C, D, H, W]
 
-    #     # volume = (
-    #     #     batch["data"][0, 0]
-    #     #     .permute(1, 2, 0)  # [D,H,W] → [H,W,D]
-    #     #     .detach()
-    #     #     .cpu()
-    #     #     .numpy()
-    #     # )
-    #     # affine = batch["affine"][0].detach().cpu().numpy()
-    #     # nib.save(
-    #     #     nib.Nifti1Image(volume, affine),
-    #     #     "input.nii.gz",
-    #     # )
+        # volume = (
+        #     batch["data"][0, 0]
+        #     .permute(1, 2, 0)  # [D,H,W] → [H,W,D]
+        #     .detach()
+        #     .cpu()
+        #     .numpy()
+        # )
+        # affine = batch["affine"][0].detach().cpu().numpy()
+        # nib.save(
+        #     nib.Nifti1Image(volume, affine),
+        #     "input.nii.gz",
+        # )
         
-    #     with torch.inference_mode():
-    #         z_quantized, indices = model.encode(
-    #             img,
-    #             quantize=True,
-    #             include_embeddings=True,
-    #         )
-    #         print("z_quantized shape:", z_quantized.shape)
-    #         # print("indices shape:", indices.shape)
+        with torch.inference_mode():
+            img = batch["data"].to(
+                device=parameter.device,  # 跟随模型，当前是 cuda:1
+                dtype=parameter.dtype,
+                non_blocking=True,
+            )
+            print("ID", batch["id"], "img shape:", img.shape)  # [B, C, D, H, W]
+            reference = img.cpu().float() # [B, C, D, H, W]
+    
+            volume = (
+                batch["data"][0, 0]
+                .permute(1, 2, 0)  # [D,H,W] → [H,W,D]
+                .detach()
+                .cpu()
+                .numpy()
+            )
+            affine = batch["affine"][0].detach().cpu().numpy()
+            nib.save(
+                nib.Nifti1Image(volume, affine),
+                "input.nii.gz",
+            )
+            
+            with torch.inference_mode():
+    
+                z_quantized, indices = model.encode(
+                    img,
+                    quantize=True,
+                    include_embeddings=True,
+                )
+                print("z_quantized shape:", z_quantized.shape)
+                # print("indices shape:", indices.shape)
+        
+                # 整图解码：输入须与 post_vq_conv 的设备和精度一致。
+                decode_parameter = next(model.post_vq_conv.parameters())
+                latent = z_quantized.to(
+                    device=decode_parameter.device, dtype=decode_parameter.dtype,
+                )
+                del z_quantized, indices, img
+    
+                with torch.autocast(
+                    device_type=decode_parameter.device.type,
+                    dtype=torch.float16,
+                    enabled=decode_parameter.device.type == "cuda",
+                ):
+                    reconstruction = model.decoder(model.post_vq_conv(latent))
+                del latent
+    
+                # 先移到 CPU，再转 float32，避免在 GPU 上额外创建一份 FP32 输出。
+                reconstruction = reconstruction.cpu().float()
+                print("reconstruction shape:", reconstruction.shape)
+                volume = reconstruction[0, 0].permute(1, 2, 0).numpy()
+                nib.save(nib.Nifti1Image(volume, affine), "reconstruction.nii.gz")
+    
+            psnr = peak_signal_noise_ratio(reference.numpy()[0, 0], reconstruction.numpy()[0, 0])
+            psnr_list.append(psnr)
+            print(f"PSNR: {psnr:.4f}")
 
-    #         # 整幅 latent 和重建结果放在 CPU，每次只搬一个块到 GPU。
-    #         reconstruction = torch.empty(img.shape, dtype=torch.float32, device="cpu")
-    #         latent = z_quantized.cpu()
-    #         del z_quantized, indices, img
+        break  # 只测试一个 batch，避免占用过多显存
 
-    #         core, halo = 32, 8
-    #         d_scale, h_scale, w_scale = 2, 4, 4
-    #         depth, height, width = latent.shape[-3:]
-
-    #         for h0 in range(0, height, core):
-    #             h1 = min(h0 + core, height)
-    #             ph0 = max(0, h0 - halo)
-    #             ph1 = min(height, h1 + halo)
-
-    #             for w0 in range(0, width, core):
-    #                 w1 = min(w0 + core, width)
-    #                 pw0 = max(0, w0 - halo)
-    #                 pw1 = min(width, w1 + halo)
-
-    #                 tile = latent[..., ph0:ph1, pw0:pw1].contiguous()
-    #                 tile = tile.to(device=parameter.device)
-
-    #                 with torch.autocast(device_type="cuda", dtype=torch.float16):
-    #                     decoded = model.decoder(model.post_vq_conv(tile))
-
-    #                 expected_shape = (
-    #                     depth * d_scale,
-    #                     (ph1 - ph0) * h_scale,
-    #                     (pw1 - pw0) * w_scale,
-    #                 )
-    #                 if tuple(decoded.shape[-3:]) != expected_shape:
-    #                     raise RuntimeError(
-    #                         f"解码块尺寸为 {tuple(decoded.shape[-3:])}，"
-    #                         f"预期为 {expected_shape}，请检查 decoder 的空间放大倍率。"
-    #                     )
-
-    #                 decoded_core = decoded[
-    #                     ...,
-    #                     (h0 - ph0) * h_scale:(h1 - ph0) * h_scale,
-    #                     (w0 - pw0) * w_scale:(w1 - pw0) * w_scale,
-    #                 ].cpu().float()
-
-    #                 reconstruction[
-    #                     ...,
-    #                     h0 * h_scale:h1 * h_scale,
-    #                     w0 * w_scale:w1 * w_scale,
-    #                 ] = decoded_core
-
-    #                 del tile, decoded
-
-    #         print("reconstruction shape:", reconstruction.shape)
-    #         # volume = (
-    #         #     reconstruction[0, 0]
-    #         #     .permute(1, 2, 0)  # [D,H,W] → [H,W,D]
-    #         #     .detach()
-    #         #     .cpu()
-    #         #     .numpy()
-    #         # )
-    #         # nib.save(nib.Nifti1Image(volume, affine),"reconstruction.nii.gz",)
-    #         psnr = peak_signal_noise_ratio(reference.numpy()[0, 0], reconstruction.numpy()[0, 0])
-    #         psnr_list.append(psnr)
-    #         print(f"PSNR: {psnr:.4f}")
-    # print(f"Average PSNR: {np.mean(psnr_list):.4f}")
+    print(f"Average PSNR: {np.mean(psnr_list):.4f}")
