@@ -220,6 +220,20 @@ class WaveletGatingUpsample(nn.Module):
 class ResBlock(TimestepBlock):
     """
     a residual block that can optionaly change the number of channels and the resolution of the input.
+
+    use_conv: determine whether to use 3x3 conv in residual branch, if False, use 1x1 conv instead.
+    use_freq: determine whether to use DWT/IDWT for downsampling/upsampling, if False, use average pooling/interpolation instead.
+    
+    wunt 中应该保持 out_channels = channels
+    频域unet
+    主分支: Norm → SiLU → Conv → DWT/IDWT → 时间条件 → 输出层
+    残差支路：                    DWT/IDWT → 通道映射
+    最终：两条分支相加
+    
+    普通unet
+    主分支: Norm → SiLU → 普通采样 → Conv → 时间条件 → 输出层
+    残差支路：          普通采样 → 通道映射
+    最终：两条分支相加
     """
     def __init__(
         self,
@@ -260,11 +274,11 @@ class ResBlock(TimestepBlock):
         self.updown = up or down
 
         if up:
-            self.h_upd = UpSample(channels, use_conv=use_conv, dims=dims, resample_2d=resample_2d, use_freq=use_freq)
-            self.x_upd = UpSample(channels, use_conv=use_conv, dims=dims, resample_2d=resample_2d, use_freq=use_freq)
+            self.h_upd = UpSample(channels, use_conv=False, dims=dims, resample_2d=resample_2d, use_freq=use_freq)
+            self.x_upd = UpSample(channels, use_conv=False, dims=dims, resample_2d=resample_2d, use_freq=use_freq)
         elif down:
-            self.h_upd = DownSample(channels, use_conv=use_conv, dims=dims, resample_2d=resample_2d, use_freq=use_freq)
-            self.x_upd = DownSample(channels, use_conv=use_conv, dims=dims, resample_2d=resample_2d, use_freq=use_freq)
+            self.h_upd = DownSample(channels, use_conv=False, dims=dims, resample_2d=resample_2d, use_freq=use_freq)
+            self.x_upd = DownSample(channels, use_conv=False, dims=dims, resample_2d=resample_2d, use_freq=use_freq)
         else:
             self.h_upd = self.x_upd = nn.Identity()
 
@@ -288,6 +302,9 @@ class ResBlock(TimestepBlock):
         # skip branch
         if self.out_channels == channels:
             self.skip_connection = nn.Identity()
+        elif use_freq:
+            # 官方频域 ResBlock 使用 1×1 卷积变换残差支路通道。
+            self.skip_connection = conv_nd(dims, channels, self.out_channels, 1)
         elif use_conv:
             self.skip_connection = conv_nd(dims, channels, self.out_channels, 3, padding=1)
         else:
@@ -299,28 +316,30 @@ class ResBlock(TimestepBlock):
         )
 
     def _forward(self, x, emb):
-        if isinstance(x, tuple):
-            skip = x[1]
-        else:
-            skip = None
+        skip = None
+
+        if self.use_freq and isinstance(x, tuple):
+            x, skip = x[0], x[1]
 
         if self.use_freq:
-            if self.updown:
-                # 下采样怎么办？
-                if self.up:
-                    x = x[0]
-                h = self.in_layers(x)
+            # 小波路径：卷积在采样之前。
+            
+            h = self.in_layers(x)
 
-                if self.up:
-                    h = (h, skip)
-                    x = (x, skip)
+            if self.down:
+                # 保存主分支的高频；残差支路只使用其低频。
                 h, skip = self.h_upd(h)
-                x = self.x_upd(x)
-            else:
-                if isinstance(x, tuple):
-                    x = x[0]
-                h = self.in_layers(x)
-        elif self.use_conv:
+                x, _ = self.x_upd(x)
+            elif self.up:
+                # 两条分支使用同一套编码器高频。
+                h = self.h_upd((h, skip))
+                x = self.x_upd((x, skip))
+
+                # 高频已被 IDWT 消费。
+                skip = None
+        
+        else:
+            # 普通路径：卷积在采样之后。
             if self.updown:
                 in_rest, in_conv = self.in_layers[:-1], self.in_layers[-1]
                 h = in_rest(x)
@@ -349,12 +368,8 @@ class ResBlock(TimestepBlock):
         # print("in resblock:", h.shape, x.shape)
         # print(self.skip_connection)
         out = self.skip_connection(x) + h
-        # 只有当skip存在，即使用
-        if self.use_conv:
-            return out
-        # 这里可能遇到接受时是一个元组导致报错。原先就是self.skip_connection(x) + h
-        # 但是或许，在Downsample和Upsample已经解决
-        elif self.use_freq:
+
+        if self.use_freq:
             return out, skip
         else:
             return out
@@ -835,13 +850,13 @@ if __name__ == "__main__":
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    x = torch.randn(1, 1, 512, 512, 8).to(device)
+    x = torch.randn(1, 1, 512, 512, 16).to(device)
     timesteps = torch.tensor([1], device=device)
     # x = torch.randn(1, 1, 8, 64, 64, device=device)
     print(f"input shape {x.shape}")
 
     model = UNet(
-        image_size = 512,
+        image_size = 256,
         in_channels = 1,
         model_channels = 64,
         out_channels = 1,

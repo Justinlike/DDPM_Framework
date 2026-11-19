@@ -21,17 +21,20 @@ def data_transform_3d():
 
     data_transform = {
         "train": T.Compose([
-            # tio 中，resize的-1表示维度不变
-            tio.Lambda(resize_hw),
+            # # tio 中，resize的-1表示维度不变
+            # tio.Lambda(resize_hw),
+            T.Resize((256, 256, -1), image_interpolation='linear'),
             T.RandomFlip(),
             tio.Lambda(custom_standardize),
         ]),
         "val": T.Compose([
-            tio.Lambda(resize_hw),
+            # tio.Lambda(resize_hw),
+            T.Resize((256, 256, -1), image_interpolation='linear'),
             tio.Lambda(custom_standardize),
         ]),
         "test": T.Compose([
-            tio.Lambda(resize_hw),
+            # tio.Lambda(resize_hw),
+            T.Resize((256, 256, -1), image_interpolation='linear'),
             tio.Lambda(custom_standardize),
         ]),
     }
@@ -123,6 +126,7 @@ class CT3D(BaseDataset):
 
         for ncct, ccta, file in zip(self.image_filenames, self.mask_filenames, self.base_filenames):
             # /data/jzk/CT/data_cba/train/ncct/1079294.nii.gz /data/jzk/CT/data_cba/train/ccta/1079294.nii.gz 1079294
+            # 也许再加一个affine矩阵
             subject = tio.Subject(imgs=tio.ScalarImage(ncct), labels=tio.ScalarImage(ccta), ID=file)
             self.subjects.append(subject)
         
@@ -137,13 +141,16 @@ class CT3D(BaseDataset):
             max_length=queue_length,                # 队列中最多缓存的patch数
             samples_per_volume=samples_per_volume,  # 抽取patch的数量
             sampler=UniformSampler(resolution_3d),  # 抽取patch的分辨率，以供最后拼回去
-            # num_workers=num_workers,
-            shuffle_subjects=shuffle_subjects,
-            shuffle_patches=shuffle_patches
+            num_workers=num_workers,
+            # shuffle_subjects=shuffle_subjects,  # 是否打乱subject的顺序，训练时为True，测试时为False
+            # shuffle_patches=shuffle_patches,    # 是否打乱patch的顺序，
+            shuffle_subjects=True if split == "train" else False,  # 是否打乱subject的顺序，训练时为True，测试时为False
+            shuffle_patches=True if split == "train" else False,   # 是否打乱patch的顺序，训练时为True，测试时为False
         )
     
         
     def __getitem__(self, index):
+        # 不知道是否需要返回affine
         return self.queue_set[index]
     
 if __name__ == '__main__':
@@ -158,4 +165,6 @@ if __name__ == '__main__':
 
         # 2D
         # [2, 1, 512, 512]
+        print(i.keys())
         print(i["ID"], i['imgs'].data.shape, i['imgs'].data.max(), i['imgs'].data.min())
+        # break

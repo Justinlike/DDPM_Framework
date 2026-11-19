@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 def conv_nd(dims, *args, **kwargs):
     if dims == 1:
@@ -52,15 +53,26 @@ def scale_module(module, scale):
     return module
 
 def checkpoint(func, inputs, params, flag):
-    """
-    Evaluate a funciton without caching intermediate activations, 
-    allowing for reduced memory at the expense of extra conpute in the backward pass
-    """
-    if flag:
-        args = tuple(inputs) + tuple(params)
-        return CheckpointFunction.apply(func, len(inputs), *args)
-    else:
+    # 保留 params 参数，兼容现有 ResBlock / AttentionBlock 调用。
+    if not flag:
         return func(*inputs)
+
+    return torch_checkpoint(
+        func,
+        *inputs,
+        use_reentrant=False,
+    )
+
+# def checkpoint(func, inputs, params, flag):
+#     """
+#     Evaluate a funciton without caching intermediate activations, 
+#     allowing for reduced memory at the expense of extra conpute in the backward pass
+#     """
+#     if flag:
+#         args = tuple(inputs) + tuple(params)
+#         return CheckpointFunction.apply(func, len(inputs), *args)
+#     else:
+#         return func(*inputs)
 
 class CheckpointFunction(torch.autograd.Function):
     @staticmethod

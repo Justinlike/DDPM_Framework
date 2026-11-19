@@ -6,7 +6,7 @@ metrics:
   - ssim
 nrow: 6
 output_dir: output
-job_name: jct_wunet_DHW_Img256_Batch1
+job_name: jct_wunet_Img256_256_16_Batch2
 excluding_modules: null
 
 # tracker
@@ -47,14 +47,14 @@ sample_steps: 50 # 50 default
 sample_method: heun
 
 #dataset
-base_data_dir: /data/jzk/CT/data_5
+base_data_dir: /data/jzk/CT/data_522
 dataset_name: ct3d
 resolution:
  - 256
  - 256
- - 8
-train_batch_size: 1
-test_batch_size: 1
+ - 16
+train_batch_size: 2
+test_batch_size: 2
 num_workers: 16
 # 限制的是baser中数据进入模型的范围，最终计算metric的数据范围都是[0, 1]
 data_range: m11 # option: 0.0,1.0 or -1.0,1.0 
@@ -77,7 +77,7 @@ model_config:
   num_head_channels: -1
   num_heads_upsample: -1
   use_scale_shift_norm: False
-  resblock_updown: False
+  resblock_updown: True
   use_new_attention_order: False
   num_groups: 32
   bottleneck_attention: True

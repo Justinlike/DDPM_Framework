@@ -6,7 +6,7 @@ metrics:
   - ssim
 nrow: 6
 output_dir: output
-job_name: jct_unet_DHW_Img256_Batch1
+job_name: jct_unet_Img256_256_16_Batch2
 excluding_modules: null
 
 # tracker
@@ -30,7 +30,7 @@ resume: null
 freeze_modules: null
 use_ema: false
 mixed_precision: bf16
-gradient_accumulation_steps: 1 # 1
+gradient_accumulation_steps: 2 # 1
 prediction_type: sample
 max_train_steps: 100000 # 100 000
 save_step_freq: 200 # 200
@@ -53,7 +53,7 @@ dataset_name: ct3d
 resolution:
  - 256
  - 256
- - 8
+ - 16
 train_batch_size: 1
 test_batch_size: 1
 num_workers: 16

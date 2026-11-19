@@ -109,57 +109,53 @@ class WavUNetModel(nn.Module):
                 self._feature_size += ch
                 input_block_chans.append(ch)
 
-            # adding downsampling operation
-            # 在最后一层下采样层，不做下采样，待修改
-            if level != len(channel_mult)-1:
-            # # 每个level都加downsample
-            # if True:
-                out_ch = ch
-                layers = []
-                layers.append(
-                    ResBlock(
-                        ch,
-                        time_embed_dim,
-                        dropout,
-                        out_channels = out_ch,
-                        dims = dims,
-                        use_checkpoint = use_checkpoint,
-                        use_scale_shift_norm = use_scale_shift_norm,
-                        down = True,
-                        num_groups = num_groups,
-                        resample_2d = resample_2d,
-                        use_freq = self.use_freq,
-                        use_conv = self.use_conv,
-                    )
-                    if resblock_updown # default False
-                    else DownSample(
-                        ch,
-                        dims=dims,
-                        out_channels=out_ch,
-                        resample_2d=resample_2d,
-                        use_conv=self.use_conv,
-                        use_freq=self.use_freq
-                    )
+            # adding downsampling operation in every level
+            out_ch = ch
+            layers = []
+            layers.append(
+                ResBlock(
+                    ch,
+                    time_embed_dim,
+                    dropout,
+                    out_channels = out_ch,
+                    dims = dims,
+                    use_checkpoint = use_checkpoint,
+                    use_scale_shift_norm = use_scale_shift_norm,
+                    down = True,
+                    num_groups = num_groups,
+                    resample_2d = resample_2d,
+                    use_freq = self.use_freq,
+                    use_conv = self.use_conv,
                 )
-                self.input_blocks.append(TimestepEmbeddingSequential(*layers))
+                if resblock_updown # default False
+                else DownSample(
+                    ch,
+                    dims=dims,
+                    out_channels=out_ch,
+                    resample_2d=resample_2d,
+                    use_conv=self.use_conv,
+                    use_freq=self.use_freq
+                )
+            )
+            self.input_blocks.append(TimestepEmbeddingSequential(*layers))
 
-                # 两个下采样分开添加，为了处理残差分支输入时检查tuple
-                # 下采样分支, 添加金字塔残差
-                layers = []
-                if self.progressive_input == "residual":
-                    layers.append(
-                        WaveletDownsample(
-                            in_ch = input_pyramid_channels,
-                            out_ch = out_ch,
-                        )    
-                    )
-                    input_pyramid_channels = out_ch
-                self.input_blocks.append(TimestepEmbeddingSequential(*layers))
+            # 两个下采样分开添加，为了处理残差分支输入时检查tuple
+            # 下采样分支, 添加金字塔残差
+            layers = []
+            if self.progressive_input == "residual":
+                layers.append(
+                    WaveletDownsample(
+                        in_ch = input_pyramid_channels,
+                        out_ch = out_ch,
+                    )    
+                )
+                input_pyramid_channels = out_ch
+            self.input_blocks.append(TimestepEmbeddingSequential(*layers))
 
-                ch = out_ch
-                input_block_chans.append(ch)
-                ds *= 2
-                self._feature_size += ch
+            ch = out_ch
+            input_block_chans.append(ch)
+            ds *= 2
+            self._feature_size += ch
 
         self.input_block_chans_bk = input_block_chans[:]
 
@@ -203,35 +199,111 @@ class WavUNetModel(nn.Module):
         )
         self._feature_size += ch
 
-        skip_channels = input_block_chans.copy()
+        # skip_channels = input_block_chans.copy()
+        # #################################
+        # # UPWARD path - feature mapping #
+        # #################################
+        # self.output_blocks = nn.ModuleList([])
+        # # [0:1, 1:2, 2:4] -> [2:4, 1:2, 0:1]
+        # for level, mult in list(enumerate(channel_mult))[::-1]:
+        #     for i in range(num_res_blocks+1):                                          # Adding Residual blocks
+        #         # 前两层resblock，最后一层是upsample
+
+        #         layers = []
+        #         # 与 forward 中 hs.pop() 一一对应
+        #         skip_ch = skip_channels.pop()
+        #         mid_ch = model_channels * mult
+
+        #         # 小波上采样前，对齐对应编码层的高频子带通道
+        #         if self.use_freq and level > 0 and i == num_res_blocks:
+        #             mid_ch = model_channels * channel_mult[level - 1]
+
+        #         if self.additive_skips:
+        #             assert ch == skip_ch, f"additive_skips need the same channels: ch={ch}, skip_ch={skip_ch}"
+        #             block_in_ch = ch
+        #         else:
+        #             # cat([h, new_hs], dim=1) 后的实际通道数
+        #             block_in_ch = ch + skip_ch
+
+        #         layers = [
+        #             ResBlock(
+        #                 block_in_ch,
+        #                 time_embed_dim,
+        #                 dropout,
+        #                 out_channels=mid_ch,
+        #                 dims=dims,
+        #                 use_checkpoint=use_checkpoint,
+        #                 use_scale_shift_norm=use_scale_shift_norm,
+        #                 num_groups=self.num_groups,
+        #                 resample_2d=resample_2d,
+        #                 use_freq=self.use_freq,
+        #                 use_conv=self.use_conv,
+        #             )
+        #         ]
+        #         # Adding Attention layers
+        #         if ds in attention_resolutions:
+        #             layers.append(
+        #                 AttentionBlock(
+        #                     mid_ch,
+        #                     use_checkpoint=use_checkpoint,
+        #                     num_heads=num_heads_upsample,
+        #                     num_head_channels=num_head_channels,
+        #                     use_new_attention_order=use_new_attention_order,
+        #                     num_groups=self.num_groups,
+        #                 )
+        #             )
+        #         ch = mid_ch
+        #         # Adding upsampling operation
+        #         # 每层都加
+        #         if i == num_res_blocks:
+        #         # # 最后一层不加
+        #         # if level and i == num_res_blocks:
+        #             out_ch = ch
+        #             layers.append(
+        #                 ResBlock(
+        #                     mid_ch,
+        #                     time_embed_dim,
+        #                     dropout,
+        #                     out_channels=out_ch,
+        #                     dims=dims,
+        #                     use_checkpoint=use_checkpoint,
+        #                     use_scale_shift_norm=use_scale_shift_norm,
+        #                     up=True,
+        #                     num_groups=self.num_groups,
+        #                     resample_2d=resample_2d,
+        #                     use_freq=self.use_freq,
+        #                     use_conv=self.use_conv,
+        #                 )
+        #                 if resblock_updown
+        #                 else UpSample(
+        #                     mid_ch,
+        #                     dims=dims,
+        #                     out_channels=out_ch,
+        #                     resample_2d=resample_2d,
+        #                     use_freq=self.use_freq,
+        #                     use_conv=self.use_conv,
+        #                 )
+        #             )
+        #             ds //= 2
+        #         self.output_blocks.append(TimestepEmbeddingSequential(*layers))
+        #         self._feature_size += ch
+        #         mid_ch = ch
+        
+        # assert not skip_channels, f"skip_channels should be empty: {skip_channels}"
+
         #################################
         # UPWARD path - feature mapping #
         #################################
         self.output_blocks = nn.ModuleList([])
-        # [0:1, 1:2, 2:4] -> [2:4, 1:2, 0:1]
-        for level, mult in list(enumerate(channel_mult))[::-1]:
-            for i in range(num_res_blocks+1):                                          # Adding Residual blocks
-                # 前两层resblock，最后一层是upsample
 
+        for level, mult in list(enumerate(channel_mult))[::-1]:
+            for i in range(num_res_blocks + 1):
                 layers = []
-                # 与 forward 中 hs.pop() 一一对应
-                skip_ch = skip_channels.pop()
                 mid_ch = model_channels * mult
 
-                # 小波上采样前，对齐对应编码层的高频子带通道
-                if self.use_freq and level > 0 and i == num_res_blocks:
-                    mid_ch = model_channels * channel_mult[level - 1]
-
-                if self.additive_skips:
-                    assert ch == skip_ch, f"additive_skips need the same channels: ch={ch}, skip_ch={skip_ch}"
-                    block_in_ch = ch
-                else:
-                    # cat([h, new_hs], dim=1) 后的实际通道数
-                    block_in_ch = ch + skip_ch
-
-                layers = [
+                layers.append(
                     ResBlock(
-                        block_in_ch,
+                        ch,
                         time_embed_dim,
                         dropout,
                         out_channels=mid_ch,
@@ -243,57 +315,42 @@ class WavUNetModel(nn.Module):
                         use_freq=self.use_freq,
                         use_conv=self.use_conv,
                     )
-                ]
-                # Adding Attention layers
-                if ds in attention_resolutions:
-                    layers.append(
-                        AttentionBlock(
-                            mid_ch,
-                            use_checkpoint=use_checkpoint,
-                            num_heads=num_heads_upsample,
-                            num_head_channels=num_head_channels,
-                            use_new_attention_order=use_new_attention_order,
-                            num_groups=self.num_groups,
-                        )
-                    )
+                )
                 ch = mid_ch
-                # Adding upsampling operation
-                # 每层都加
+
+                # 每个 level 的最后一个块负责上采样。
                 if i == num_res_blocks:
-                # # 最后一层不加
-                # if level and i == num_res_blocks:
-                    out_ch = ch
                     layers.append(
-                        ResBlock(
-                            mid_ch,
-                            time_embed_dim,
-                            dropout,
-                            out_channels=out_ch,
-                            dims=dims,
-                            use_checkpoint=use_checkpoint,
-                            use_scale_shift_norm=use_scale_shift_norm,
-                            up=True,
-                            num_groups=self.num_groups,
-                            resample_2d=resample_2d,
-                            use_freq=self.use_freq,
-                            use_conv=self.use_conv,
-                        )
-                        if resblock_updown
-                        else UpSample(
-                            mid_ch,
-                            dims=dims,
-                            out_channels=out_ch,
-                            resample_2d=resample_2d,
-                            use_freq=self.use_freq,
-                            use_conv=self.use_conv,
-                        )
+                    ResBlock(
+                        ch,
+                        time_embed_dim,
+                        dropout,
+                        out_channels=ch,
+                        dims=dims,
+                        use_checkpoint=use_checkpoint,
+                        use_scale_shift_norm=use_scale_shift_norm,
+                        up=True,
+                        num_groups=self.num_groups,
+                        resample_2d=resample_2d,
+                        use_freq=self.use_freq,
+                        use_conv=self.use_conv,
                     )
+                    if resblock_updown
+                    else UpSample(
+                        ch,
+                        dims=dims,
+                        out_channels=ch,
+                        resample_2d=resample_2d,
+                        use_freq=self.use_freq,
+                        use_conv=self.use_conv,
+                    )
+                )
                     ds //= 2
-                self.output_blocks.append(TimestepEmbeddingSequential(*layers))
+
+                self.output_blocks.append(
+                    TimestepEmbeddingSequential(*layers)
+                )
                 self._feature_size += ch
-                mid_ch = ch
-        
-        assert not skip_channels, f"skip_channels should be empty: {skip_channels}"
 
         ################
         # Out ResBlock #
@@ -355,136 +412,195 @@ class WavUNetModel(nn.Module):
 
         return self
 
+    # def forward(self, x, timesteps):
+    #     """
+    #     Apply the model to an input batch.
+
+    #     :param x: an [N x C x H x W x D] Tensor of inputs.
+    #     :param timesteps: a 1-D batch of timesteps.
+    #     :param zemb: an [N] Tensor of labels, if class-conditional.
+    #     :return: an [N x C x ...] Tensor of outputs.
+    #     """
+    #     hs = [] # 记录空间下采样
+    #     wavelet_hs = [] # 记录频域下采样
+
+    #     input_pyramid = x
+    #     emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
+    #     h = x
+    #     self.hs_shape = []
+
+    #     for module in self.input_blocks:
+    #         # print("input module:", module)
+    #         if not isinstance(module[0], WaveletDownsample):
+    #             h = module(h, emb)
+    #             skip = None
+    #             if isinstance(h, tuple):
+    #                 h, skip = h
+    #                 wavelet_hs.append(skip) if skip is not None and self.use_freq else None
+    #             hs.append(h)
+    #             self.hs_shape.append(h.shape)
+    #         else:
+    #             # 下采样会有连续两个，先做DownSample，在做WaveletDownsample
+    #             # 下采样主干 DownSample: h = module(h, emb)
+    #             # 金字塔分支 WaveletDownsample: input_pyramid = module(input_pyramid, emb)
+    #             # h = input_pyramid + h
+    #             # print("input_pyramid:", input_pyramid.shape, emb.shape)
+    #             input_pyramid = module(input_pyramid, emb)
+    #             # print(input_pyramid.shape, h.shape)
+    #             input_pyramid = input_pyramid + h
+    #             h = input_pyramid
+
+    #     for module in self.middle_block:
+    #         # h = module(h, emb)
+    #         # h = module(h)
+    #         # print("middle module:", module)
+    #         if isinstance(module, ResBlock):
+    #             # resblock
+    #             h = module(h, emb)
+    #         else:
+    #             # attention block
+    #             h = module(h)
+    #         if isinstance(h, tuple):
+    #             h, skip = h
+    #             # 中间层的skip有什么用？
+
+    #     # for _ in hs:
+    #     #     if _ is not None:
+    #     #         print(_.shape)
+    #     #     else:
+    #     #         print(_)
+    #     for _ in wavelet_hs:
+    #         if isinstance(_, tuple):
+    #             print("wavelet_hs:", len(_))
+    #         else:
+    #             print("wavelet_hs:", _.shape)
+
+    #     for module in self.output_blocks:
+    #         # print("output module:", module)
+    #         new_hs = hs.pop()
+    #         # new_wavelet_hs = wavelet_hs.pop() if wavelet_hs else None
+
+    #         # if new_hs is not None:
+    #         #     skip = new_hs
+
+    #         if h is not None and isinstance(h, tuple):
+    #             h = h[0]
+
+    #         assert h.shape[2:] == new_hs.shape[2:], (
+    #             f"skip 空间尺寸不匹配: h={h.shape}, skip={new_hs.shape}"
+    #         )
+    #         # use additive skip connection
+    #         # 处理空间域skip
+    #         if self.additive_skips:
+    #             h = (h + new_hs) / np.sqrt(2.0)
+    #         # use frequency aware skip connection
+    #         # 这个地方貌似不是我们理解的use_freq，而是指是否使用频域的skip connection
+    #         # elif self.use_freq:
+    #         elif False:
+    #             if isinstance(h, tuple):
+    #                 l = list(h)
+    #                 l[1] = skip
+    #                 h = tuple(l)
+    #             else:
+    #                 print("进入tuple")
+    #                 print("h shape:", h.shape, "new_hs shape:", len(new_wavelet_hs))
+    #                 h = (h, new_wavelet_hs)
+    #         else:
+    #             # print("h shape:", h.shape, "new_hs shape:", new_hs.shape)
+    #             h = torch.cat([h, new_hs], dim=1)
+
+    #         # 只有包含小波上采样的块，才取出并携带高频子带
+    #         needs_details = any(
+    #             isinstance(layer, UpSample) and layer.use_freq
+    #             for layer in module
+    #         )
+
+    #         if needs_details:
+    #             h = (h, wavelet_hs.pop())
+
+    #         h = module(h, emb)
+
+    #     for module in self.out_res:
+    #         h = module(h, emb)
+
+    #     h, _ = h
+    #     return self.out(h)
+
     def forward(self, x, timesteps):
-        """
-        Apply the model to an input batch.
-
-        :param x: an [N x C x H x W x D] Tensor of inputs.
-        :param timesteps: a 1-D batch of timesteps.
-        :param zemb: an [N] Tensor of labels, if class-conditional.
-        :return: an [N x C x ...] Tensor of outputs.
-        """
-        hs = [] # 记录空间下采样
-        wavelet_hs = [] # 记录频域下采样
-
+        wavelet_hs = []
         input_pyramid = x
-        emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
+
+        emb = self.time_embed(
+            timestep_embedding(timesteps, self.model_channels)
+        )
         h = x
         self.hs_shape = []
 
+        ################
+        # ENCODER path #
+        ################
         for module in self.input_blocks:
-            # print("input module:", module)
-            if not isinstance(module[0], WaveletDownsample):
-                h = module(h, emb)
-                skip = None
-                if isinstance(h, tuple):
-                    h, skip = h
-                    wavelet_hs.append(skip) if skip is not None and self.use_freq else None
-                hs.append(h)
-                self.hs_shape.append(h.shape)
-            else:
-                # 下采样会有连续两个，先做DownSample，在做WaveletDownsample
-                # 下采样主干 DownSample: h = module(h, emb)
-                # 金字塔分支 WaveletDownsample: input_pyramid = module(input_pyramid, emb)
-                # h = input_pyramid + h
-                # print("input_pyramid:", input_pyramid.shape, emb.shape)
+            if isinstance(module[0], WaveletDownsample):
                 input_pyramid = module(input_pyramid, emb)
-                # print(input_pyramid.shape, h.shape)
                 input_pyramid = input_pyramid + h
                 h = input_pyramid
+            else:
+                h = module(h, emb)
 
+                if isinstance(h, tuple):
+                    h, skip = h
+                    if skip is not None:
+                        wavelet_hs.append(skip)
+
+                self.hs_shape.append(h.shape)
+
+        ################
+        # MIDDLE block #
+        ################
         for module in self.middle_block:
-            # h = module(h, emb)
-            # h = module(h)
-            # print("middle module:", module)
             if isinstance(module, ResBlock):
-                # resblock
                 h = module(h, emb)
             else:
-                # attention block
                 h = module(h)
+
             if isinstance(h, tuple):
-                h, skip = h
-                # 中间层的skip有什么用？
+                h, _ = h
 
-        # for _ in hs:
-        #     if _ is not None:
-        #         print(_.shape)
-        #     else:
-        #         print(_)
-        for _ in wavelet_hs:
-            if isinstance(_, tuple):
-                print("wavelet_hs:", len(_))
-            else:
-                print("wavelet_hs:", _.shape)
-
+        ################
+        # DECODER path #
+        ################
         for module in self.output_blocks:
-            # print("output module:", module)
-            new_hs = hs.pop()
-            # new_wavelet_hs = wavelet_hs.pop() if wavelet_hs else None
-
-            # if new_hs is not None:
-            #     skip = new_hs
-
-            if h is not None and isinstance(h, tuple):
+            if isinstance(h, tuple):
                 h = h[0]
 
-            assert h.shape[2:] == new_hs.shape[2:], (
-                f"skip 空间尺寸不匹配: h={h.shape}, skip={new_hs.shape}"
-            )
-            # use additive skip connection
-            # 处理空间域skip
-            if self.additive_skips:
-                h = (h + new_hs) / np.sqrt(2.0)
-            # use frequency aware skip connection
-            # 这个地方貌似不是我们理解的use_freq，而是指是否使用频域的skip connection
-            # elif self.use_freq:
-            elif False:
-                if isinstance(h, tuple):
-                    l = list(h)
-                    l[1] = skip
-                    h = tuple(l)
-                else:
-                    print("进入tuple")
-                    print("h shape:", h.shape, "new_hs shape:", len(new_wavelet_hs))
-                    h = (h, new_wavelet_hs)
-            else:
-                # print("h shape:", h.shape, "new_hs shape:", new_hs.shape)
-                h = torch.cat([h, new_hs], dim=1)
-
-            # 只有包含小波上采样的块，才取出并携带高频子带
             needs_details = any(
-                isinstance(layer, UpSample) and layer.use_freq
+                (
+                    isinstance(layer, UpSample)
+                    and layer.use_freq
+                )
+                or (
+                    isinstance(layer, ResBlock)
+                    and layer.use_freq
+                    and layer.up
+                )
                 for layer in module
             )
+
 
             if needs_details:
                 h = (h, wavelet_hs.pop())
 
             h = module(h, emb)
-            
-            # # unpack the module, for match the upsample's input.
-            # for layer in module:
-            #     # resblock may return [h, None]
-            #     if isinstance(h, tuple):
-            #         h = h[0]
-            #     if isinstance(layer, UpSample):
-            #         if layer.use_freq:
-            #             if not new_wavelet_hs:
-            #                 raise ValueError("没有可供当前上采样使用的高频子带")
-            #             new_wavelet_hs = wavelet_hs.pop()
-            #             h = layer((h, new_wavelet_hs))
-            #         else:
-            #             h = layer(h)
-            #     elif isinstance(layer, ResBlock):
-            #         h = layer(h, emb)
-            #     else:
-            #         h = layer(h)
 
+        ################
+        # Out ResBlock #
+        ################
         for module in self.out_res:
             h = module(h, emb)
 
-        h, _ = h
+        if isinstance(h, tuple):
+            h = h[0]
+
         return self.out(h)
 
 if __name__ == "__main__":
@@ -492,7 +608,7 @@ if __name__ == "__main__":
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    x = torch.randn(1, 1, 16, 256, 256).to(device)
+    x = torch.randn(1, 1, 32, 256, 256).to(device)
     timesteps = torch.tensor([1], device=device)
     # x = torch.randn(1, 1, 8, 64, 64, device=device)
     print(f"input shape {x.shape}")
@@ -505,7 +621,7 @@ if __name__ == "__main__":
         num_res_blocks=2,
         attention_resolutions=[],
         dropout=0.1,
-        channel_mult=(1, 2, 2, 4, 8),
+        channel_mult=(1, 2, 2, 4),
         conv_resample=True,
         dims=3,
         num_classes=None,
