@@ -17,7 +17,9 @@ from .lpips import LPIPS
 from .codebook import Codebook
 
 def silu(x):
-    return x*torch.sigmoid(x)
+    # we utilize the official pytorch version instead of mannual implementation, cause the memory usage is much lower.
+    return F.silu(x)
+    # return x*torch.sigmoid(x)
 
 
 class SiLU(nn.Module):
@@ -25,7 +27,8 @@ class SiLU(nn.Module):
         super(SiLU, self).__init__()
 
     def forward(self, x):
-        return silu(x)
+        return F.silu(x)
+        # return silu(x)
 
 
 def hinge_d_loss(logits_real, logits_fake):

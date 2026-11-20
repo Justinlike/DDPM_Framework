@@ -83,13 +83,13 @@ def _make_dataloaders(cfg: DictConfig) -> tuple[DataLoader, DataLoader]:
     # 合并训练集
     train_dataset = ConcatDataset([
         train_ncct,
-        train_ccta
+        # train_ccta
     ])
 
     # 合并验证集
     val_dataset = ConcatDataset([
         val_ncct,
-        val_ccta
+        # val_ccta
     ])
 
     loader_kwargs = {
