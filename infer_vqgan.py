@@ -28,57 +28,116 @@ def load_vqgan(checkpoint_path, device=None, config_path=None):
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     return model.to(device)
 
+def got_latent(
+        dataloader,
+        model,
+        output_dir, 
+        split="test", 
+        rgb="ncct",
+        quantize=False, 
+        save_latent=True, 
+        eval=False,
+    ):
+    """将 dataloader 中的图像编码为 latent 并保存为 NIfTI 文件。
 
-@torch.inference_mode()
-def generate_latent(model, image, *, layout="DHW", output_layout="DHW", quantize=False):
-    """接收 tensor/ndarray，支持三维、[C,...] 或 [B,C,...] 输入。
-
-    layout="DHW": 已有训练 DataLoader 输出可直接传入。
-    layout="HWD": 原始图像，内部转换为训练采用的 DHW。
-    layout="native": 自定义训练流程的原生轴序，不做转换；输出也须 native。
-    quantize=False: 连续 pre_vq_conv 特征；True: 最近码本向量（不是整数索引）。
-    不进行归一化、resize 或额外 latent 缩放，返回值保留 batch/channel 轴。
+    output_dir: 输出目录，按 batch["id"] 命名。
+    layout: 输入图像轴序，见 generate_latent。
+    quantize: if true, 保存量化后的 latent。
+    save_latent: 是否保存 latent。
+    eval: 是否进行评估。
     """
-    if layout not in {"DHW", "HWD", "native"}:
-        raise ValueError("layout 必须是 DHW、HWD 或 native")
-    if output_layout not in {"DHW", "HWD", "native"}:
-        raise ValueError("output_layout 必须是 DHW、HWD 或 native")
-    if (layout == "native") != (output_layout == "native"):
-        raise ValueError("原生轴序输入须同时指定 output_layout='native'")
-    x = torch.as_tensor(image)
-    if x.ndim == 3:
-        x = x.unsqueeze(0).unsqueeze(0)
-    elif x.ndim == 4:
-        x = x.unsqueeze(0)
-    if x.ndim != 5:
-        raise ValueError("输入需为 [S1,S2,S3]、[C,S1,S2,S3] 或 [B,C,S1,S2,S3]")
-    if layout == "HWD":
-        x = x.permute(0, 1, 4, 2, 3)
-    if x.shape[1] != model.cfg.dataset.image_channels:
-        raise ValueError("输入通道数与训练配置不一致")
-    factors = tuple(int(v) for v in model.cfg.model.downsample)
-    if any(s % f for s, f in zip(x.shape[2:], factors)):
-        raise ValueError(f"输入空间尺寸 {tuple(x.shape[2:])} 必须被训练压缩比 {factors} 整除")
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    save_path = output_dir / split / rgb
+
     parameter = next(model.encoder.parameters())
-    x = x.to(device=parameter.device, dtype=parameter.dtype).contiguous()
-    model.eval()
-    latent = model.encode(x, quantize=False)
-    if quantize:
-        # 分块查找最近码本向量，避免原 Codebook.forward 构建巨大的 one-hot。
-        codes = model.codebook.embeddings.float()
-        flat = latent.movedim(1, -1).reshape(-1, latent.shape[1]).float()
-        indices = []
-        with torch.autocast(device_type=x.device.type, enabled=False):
-            code_norm = codes.square().sum(1)
-            for chunk in flat.split(4096):
-                distances = chunk.square().sum(1, keepdim=True) - 2 * chunk @ codes.T + code_norm
-                indices.append(distances.argmin(1))
-            latent = torch.nn.functional.embedding(torch.cat(indices), codes).reshape(
-                latent.shape[0], *latent.shape[2:], latent.shape[1]
-            ).movedim(-1, 1).contiguous()
-    if output_layout == "HWD":
-        latent = latent.permute(0, 1, 3, 4, 2).contiguous()
-    return latent
+    psnr_list, ssim_list = [], []
+    for batch in dataloader:
+        img = batch["data"].to(
+            device=parameter.device,  # 跟随模型，当前是 cuda:1
+            dtype=parameter.dtype,
+            non_blocking=True,
+        )
+        print("ID", batch["id"][0], "img shape:", img.shape)  # [B, C, D, H, W]
+        reference = img.cpu().float() # [B, C, D, H, W]
+        affine = batch["affine"][0].detach().cpu().numpy()
+
+        with torch.inference_mode():
+            ##############################
+            # 编码为 latent(after quentized)
+            ##############################
+            latent = model.encode(
+                img,
+                quantize=False,
+            )
+            print("latent shape:", latent.shape)
+
+            # save latent
+            if save_latent:
+                # # nib version
+                # # 现在顺序为 [B, C, D, H, W]，保存为 NIfTI 时需要 permute 为 [B, D, H, W, C]，再保存为 NIfTI。
+                # array = (
+                #     latent[0].detach().cpu().float()
+                #     .permute(2, 3, 1, 0).contiguous().numpy()
+                # )  # [C,D,H,W] -> [H,W,D,C]
+                # nib.save(
+                #     nib.Nifti1Image(array, affine=np.eye(4)),
+                #     save_path / f"{batch['id'][0]}.nii.gz",
+                # )
+
+                # torch version
+                torch.save(
+                    {
+                        "latent": latent[0].detach().cpu().float(),
+                        "affine": affine,
+                    },
+                    save_path / f"{batch['id'][0]}.pt",
+                )
+
+            ##############################
+            # 解码 只有评估时需要解码
+            ##############################
+            if eval:
+                # 整图解码：输入须与 post_vq_conv 的设备和精度一致。
+                decode_parameter = next(model.post_vq_conv.parameters())
+                latent = latent.to(
+                    device=decode_parameter.device, dtype=decode_parameter.dtype,
+                )
+                del img
+
+                # with torch.autocast(
+                #     device_type=decode_parameter.device.type,
+                #     dtype=torch.float16,
+                #     enabled=decode_parameter.device.type == "cuda",
+                # ):
+                #     reconstruction = model.decoder(model.post_vq_conv(latent))
+                # del latent
+                with torch.inference_mode():
+                    reconstruction = model.decode(latent, quantize=True)
+
+                # 先移到 CPU，再转 float32，避免在 GPU 上额外创建一份 FP32 输出。
+                reconstruction = reconstruction.cpu().float()
+                print("reconstruction shape:", reconstruction.shape)
+                volume = reconstruction[0, 0].permute(1, 2, 0).numpy()
+                nib.save(nib.Nifti1Image(volume, affine), "reconstruction.nii.gz")
+
+                psnr = peak_signal_noise_ratio(
+                    reference.numpy()[0, 0], 
+                    reconstruction.numpy()[0, 0],
+                    data_range=2.0
+                )
+                ssim = structural_similarity(
+                    reference.numpy()[0, 0],
+                    reconstruction.numpy()[0, 0],
+                    data_range=2.0,
+                )
+                psnr_list.append(psnr)
+                ssim_list.append(ssim)
+                print(f"PSNR: {psnr:.4f}, SSIM: {ssim:.4f}")
+
+    print(f"Average PSNR: {np.mean(psnr_list):.4f}") if eval else None
+    print(f"Average SSIM: {np.mean(ssim_list):.4f}") if eval else None
 
 if __name__ == "__main__":
     cfg = OmegaConf.load("/data/jzk/DDPM_Framework/conf/config-vqgan-infer.yaml")
@@ -89,170 +148,206 @@ if __name__ == "__main__":
     # print(model)
     model.eval()
 
-    # /data/jzk/DDPM_Framework/output/vq_gan/CT3D/single_gpu2_gan_train/lightning_logs/version_1/checkpoints/epoch=2-step=57000-train/recon_loss=0.04.ckpt
-    # # image: [512,512,64]，使用与训练一致的归一化
-    # for img in train_dataloader:
-    #     latent = generate_latent(
-    #         model, img,
-    #         layout="HWD",
-    #         output_layout="HWD",
-    #         quantize=False,  # True 则返回量化后的码本向量
-    #     )
-    #     print("latent shape:", latent.shape)
-
-    # batch = next(iter(train_dataloader))
-    # print(batch.keys())  # 先查看实际字段名    
+    # image: [512,512,64]，使用与训练一致的归一化
     parameter = next(model.encoder.parameters())
     psnr_list = []
+    ssim_list = []
 
-    for batch in val_dataloader:
-        img = batch["data"].to(
-            device=parameter.device,  # 跟随模型，当前是 cuda:1
-            dtype=parameter.dtype,
-            non_blocking=True,
-        )
-        print("ID", batch["id"], "img shape:", img.shape)  # [B, C, D, H, W]
-        reference = img.cpu().float() # [B, C, D, H, W]
+    got_latent(
+        val_dataloader,
+        model,
+        output_dir="/data/jzk/CT/data_522/",
+        split="test",
+        rgb="ncct_latents",
+        save_latent=False,
+        eval=True,
+    )
 
-        volume = (
-            batch["data"][0, 0]
-            .permute(1, 2, 0)  # [D,H,W] → [H,W,D]
-            .detach()
-            .cpu()
-            .numpy()
-        )
-        # affine = batch["affine"][0].detach().cpu().numpy()
-        # nib.save(
-        #     nib.Nifti1Image(volume, affine),
-        #     f"input.nii.gz",
-        # )
+    # got_latent(
+    #     train_dataloader,
+    #     model,
+    #     output_dir="/data/jzk/CT/data_522/",
+    #     split="train",
+    #     rgb="ncct_latents",
+    #     save_latent=True,
+    #     eval=False,
+    # )
+
+    # got_latent(
+    #     val_dataloader,
+    #     model,
+    #     output_dir="/data/jzk/CT/data_522/",
+    #     split="test",
+    #     rgb="ccta_latents",
+    #     save_latent=True,
+    #     eval=False,
+    # )
+
+    # got_latent(
+    #     train_dataloader,
+    #     model,
+    #     output_dir="/data/jzk/CT/data_522/",
+    #     split="train",
+    #     rgb="ccta_latents",
+    #     save_latent=True,
+    #     eval=False,
+    # )
+
+    # for batch in val_dataloader:
+    #     img = batch["data"].to(
+    #         device=parameter.device,  # 跟随模型，当前是 cuda:1
+    #         dtype=parameter.dtype,
+    #         non_blocking=True,
+    #     )
+    #     print("ID", batch["id"], "img shape:", img.shape)  # [B, C, D, H, W]
+    #     reference = img.cpu().float() # [B, C, D, H, W]
+
+    #     affine = batch["affine"][0].detach().cpu().numpy()
+    #     # nib.save(
+    #     #     nib.Nifti1Image(volume, affine),
+    #     #     f"input.nii.gz",
+    #     # )
         
-        with torch.inference_mode():
+    #     with torch.inference_mode():
 
-            z_quantized, indices = model.encode(
-                img,
-                quantize=True,
-                include_embeddings=True,
-            )
-            print("z_quantized shape:", z_quantized.shape)
-            # print("indices shape:", indices.shape)
-            nib.save(
-                nib.Nifti1Image(z_quantized.detach().cpu().numpy(), ),
-                f"/data/jzk/CT/data_522/test/ncct_latents/{batch['id'][0]}.nii.gz.nii.gz",
-            )
-    
-        #     # 整图解码：输入须与 post_vq_conv 的设备和精度一致。
-        #     decode_parameter = next(model.post_vq_conv.parameters())
-        #     latent = z_quantized.to(
-        #         device=decode_parameter.device, dtype=decode_parameter.dtype,
-        #     )
-        #     del z_quantized, indices, img
-
-        #     with torch.autocast(
-        #         device_type=decode_parameter.device.type,
-        #         dtype=torch.float16,
-        #         enabled=decode_parameter.device.type == "cuda",
-        #     ):
-        #         reconstruction = model.decoder(model.post_vq_conv(latent))
-        #     del latent
-
-        #     # 先移到 CPU，再转 float32，避免在 GPU 上额外创建一份 FP32 输出。
-        #     reconstruction = reconstruction.cpu().float()
-        #     print("reconstruction shape:", reconstruction.shape)
-        #     volume = reconstruction[0, 0].permute(1, 2, 0).numpy()
-        #     nib.save(nib.Nifti1Image(volume, affine), "reconstruction.nii.gz")
-
-        #     psnr = peak_signal_noise_ratio(reference.numpy()[0, 0], reconstruction.numpy()[0, 0])
-        #     psnr_list.append(psnr)
-        #     print(f"PSNR: {psnr:.4f}")
-        # break
-    
-    print("in train_dataloader")
-    for batch in train_dataloader:
-        # img = batch["data"].to(
-        #     device=parameter.device,  # 跟随模型，当前是 cuda:2
-        #     dtype=parameter.dtype,
-        #     non_blocking=True,
-        # )
-        # # print("ID", batch["id"], "img shape:", img.shape)  # [B, C, D, H, W]
-        # reference = img.cpu().float() # [B, C, D, H, W]
-
-        # volume = (
-        #     batch["data"][0, 0]
-        #     .permute(1, 2, 0)  # [D,H,W] → [H,W,D]
-        #     .detach()
-        #     .cpu()
-        #     .numpy()
-        # )
-        # affine = batch["affine"][0].detach().cpu().numpy()
-        # nib.save(
-        #     nib.Nifti1Image(volume, affine),
-        #     "input.nii.gz",
-        # )
-        
-        with torch.inference_mode():
-            img = batch["data"].to(
-                device=parameter.device,  # 跟随模型，当前是 cuda:1
-                dtype=parameter.dtype,
-                non_blocking=True,
-            )
-            print("ID", batch["id"], "img shape:", img.shape)  # [B, C, D, H, W]
-            reference = img.cpu().float() # [B, C, D, H, W]
-    
-            volume = (
-                batch["data"][0, 0]
-                .permute(1, 2, 0)  # [D,H,W] → [H,W,D]
-                .detach()
-                .cpu()
-                .numpy()
-            )
-            # affine = batch["affine"][0].detach().cpu().numpy()
-            # nib.save(
-            #     nib.Nifti1Image(volume, affine),
-            #     f"/data/jzk/CT/data_522/train/ncct_latents/{batch['id'][0]}.nii.gz",
-            # )
+    #         z_quantized, indices = model.encode(
+    #             img,
+    #             quantize=True,
+    #             include_embeddings=True,
+    #         )
+    #         print("z_quantized shape:", z_quantized.shape)
+    #         # print("indices shape:", indices.shape)
             
-            with torch.inference_mode():
+    #         # nib.save(
+    #         #     nib.Nifti1Image(z_quantized.detach().cpu().numpy(), ),
+    #         #     f"/data/jzk/CT/data_522/test/ncct_latents/{batch['id'][0]}.nii.gz",
+    #         # )
     
-                z_quantized, indices = model.encode(
-                    img,
-                    quantize=True,
-                    include_embeddings=True,
-                )
-                print("z_quantized shape:", z_quantized.shape)
+    #         # 整图解码：输入须与 post_vq_conv 的设备和精度一致。
+    #         decode_parameter = next(model.post_vq_conv.parameters())
+    #         latent = z_quantized.to(
+    #             device=decode_parameter.device, dtype=decode_parameter.dtype,
+    #         )
+    #         del z_quantized, indices, img
 
-                nib.save(
-                    nib.Nifti1Image(z_quantized.detach().cpu().numpy(), ),
-                    f"/data/jzk/CT/data_522/train/ncct_latents/{batch['id'][0]}.nii.gz.nii.gz",
-                )
+    #         with torch.autocast(
+    #             device_type=decode_parameter.device.type,
+    #             dtype=torch.float16,
+    #             enabled=decode_parameter.device.type == "cuda",
+    #         ):
+    #             reconstruction = model.decoder(model.post_vq_conv(latent))
+    #         del latent
 
-                # print("indices shape:", indices.shape)
-        
-                # # 整图解码：输入须与 post_vq_conv 的设备和精度一致。
-                # decode_parameter = next(model.post_vq_conv.parameters())
-                # latent = z_quantized.to(
-                #     device=decode_parameter.device, dtype=decode_parameter.dtype,
-                # )
-                # del z_quantized, indices, img
-    
-            #     with torch.autocast(
-            #         device_type=decode_parameter.device.type,
-            #         dtype=torch.float16,
-            #         enabled=decode_parameter.device.type == "cuda",
-            #     ):
-            #         reconstruction = model.decoder(model.post_vq_conv(latent))
-            #     del latent
-    
-            #     # 先移到 CPU，再转 float32，避免在 GPU 上额外创建一份 FP32 输出。
-            #     reconstruction = reconstruction.cpu().float()
-            #     print("reconstruction shape:", reconstruction.shape)
-            #     volume = reconstruction[0, 0].permute(1, 2, 0).numpy()
-            #     nib.save(nib.Nifti1Image(volume, affine), "reconstruction.nii.gz")
-    
-            # psnr = peak_signal_noise_ratio(reference.numpy()[0, 0], reconstruction.numpy()[0, 0])
-            # # psnr_list.append(psnr)
-            # print(f"PSNR: {psnr:.4f}")
+    #         # 先移到 CPU，再转 float32，避免在 GPU 上额外创建一份 FP32 输出。
+    #         reconstruction = reconstruction.cpu().float()
+    #         print("reconstruction shape:", reconstruction.shape)
+    #         volume = reconstruction[0, 0].permute(1, 2, 0).numpy()
+    #         nib.save(nib.Nifti1Image(volume, affine), "reconstruction.nii.gz")
 
-        # break  # 只测试一个 batch，避免占用过多显存
+    #         psnr = peak_signal_noise_ratio(
+    #             reference.numpy()[0, 0], 
+    #             reconstruction.numpy()[0, 0],
+    #             data_range=2.0
+    #         )
+    #         ssim = structural_similarity(
+    #             reference.numpy()[0, 0],
+    #             reconstruction.numpy()[0, 0],
+    #             data_range=2.0,
+    #         )
+    #         psnr_list.append(psnr)
+    #         ssim_list.append(ssim)
+    #         print(f"PSNR: {psnr:.4f}, SSIM: {ssim:.4f}")
 
+    #     # break
     # print(f"Average PSNR: {np.mean(psnr_list):.4f}")
+    # print(f"Average SSIM: {np.mean(ssim_list):.4f}")
+    
+    # print("in train_dataloader")
+    # for batch in train_dataloader:
+    #     # img = batch["data"].to(
+    #     #     device=parameter.device,  # 跟随模型，当前是 cuda:2
+    #     #     dtype=parameter.dtype,
+    #     #     non_blocking=True,
+    #     # )
+    #     # # print("ID", batch["id"], "img shape:", img.shape)  # [B, C, D, H, W]
+    #     # reference = img.cpu().float() # [B, C, D, H, W]
+
+    #     # volume = (
+    #     #     batch["data"][0, 0]
+    #     #     .permute(1, 2, 0)  # [D,H,W] → [H,W,D]
+    #     #     .detach()
+    #     #     .cpu()
+    #     #     .numpy()
+    #     # )
+    #     # affine = batch["affine"][0].detach().cpu().numpy()
+    #     # nib.save(
+    #     #     nib.Nifti1Image(volume, affine),
+    #     #     "input.nii.gz",
+    #     # )
+        
+    #     with torch.inference_mode():
+    #         img = batch["data"].to(
+    #             device=parameter.device,  # 跟随模型，当前是 cuda:1
+    #             dtype=parameter.dtype,
+    #             non_blocking=True,
+    #         )
+    #         print("ID", batch["id"], "img shape:", img.shape)  # [B, C, D, H, W]
+    #         reference = img.cpu().float() # [B, C, D, H, W]
+    
+    #         volume = (
+    #             batch["data"][0, 0]
+    #             .permute(1, 2, 0)  # [D,H,W] → [H,W,D]
+    #             .detach()
+    #             .cpu()
+    #             .numpy()
+    #         )
+    #         # affine = batch["affine"][0].detach().cpu().numpy()
+    #         # nib.save(
+    #         #     nib.Nifti1Image(volume, affine),
+    #         #     f"/data/jzk/CT/data_522/train/ncct_latents/{batch['id'][0]}.nii.gz",
+    #         # )
+            
+    #         with torch.inference_mode():
+    
+    #             z_quantized, indices = model.encode(
+    #                 img,
+    #                 quantize=True,
+    #                 include_embeddings=True,
+    #             )
+    #             print("z_quantized shape:", z_quantized.shape)
+
+    #             nib.save(
+    #                 nib.Nifti1Image(z_quantized.detach().cpu().numpy(), ),
+    #                 f"/data/jzk/CT/data_522/train/ncct_latents/{batch['id'][0]}.nii.gz",
+    #             )
+
+    #             # print("indices shape:", indices.shape)
+        
+    #             # # 整图解码：输入须与 post_vq_conv 的设备和精度一致。
+    #             # decode_parameter = next(model.post_vq_conv.parameters())
+    #             # latent = z_quantized.to(
+    #             #     device=decode_parameter.device, dtype=decode_parameter.dtype,
+    #             # )
+    #             # del z_quantized, indices, img
+    
+    #         #     with torch.autocast(
+    #         #         device_type=decode_parameter.device.type,
+    #         #         dtype=torch.float16,
+    #         #         enabled=decode_parameter.device.type == "cuda",
+    #         #     ):
+    #         #         reconstruction = model.decoder(model.post_vq_conv(latent))
+    #         #     del latent
+    
+    #         #     # 先移到 CPU，再转 float32，避免在 GPU 上额外创建一份 FP32 输出。
+    #         #     reconstruction = reconstruction.cpu().float()
+    #         #     print("reconstruction shape:", reconstruction.shape)
+    #         #     volume = reconstruction[0, 0].permute(1, 2, 0).numpy()
+    #         #     nib.save(nib.Nifti1Image(volume, affine), "reconstruction.nii.gz")
+    
+    #         # psnr = peak_signal_noise_ratio(reference.numpy()[0, 0], reconstruction.numpy()[0, 0])
+    #         # # psnr_list.append(psnr)
+    #         # print(f"PSNR: {psnr:.4f}")
+
+    #     # break  # 只测试一个 batch，避免占用过多显存
+
+    # # 
