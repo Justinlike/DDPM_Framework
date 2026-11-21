@@ -196,25 +196,25 @@ if __name__ == "__main__":
     print(len(train_loader_ncct))
     print(len(train_loader_ccta))
 
-    # got_latent(
-    #     train_loader_ncct,
-    #     model,
-    #     output_dir="/data/jzk/CT/data_522/",
-    #     split="train",
-    #     rgb="ncct_latents",
-    #     save_latent=True,
-    #     eval=False,
-    # )
+    got_latent(
+        train_loader_ncct,
+        model,
+        output_dir="/data/jzk/CT/data_522/",
+        split="train",
+        rgb="ncct_latents",
+        save_latent=True,
+        eval=False,
+    )
     
-    # got_latent(
-    #     train_loader_ccta,
-    #     model,
-    #     output_dir="/data/jzk/CT/data_522/",
-    #     split="train",
-    #     rgb="ccta_latents",
-    #     save_latent=True,
-    #     eval=False,
-    # )
+    got_latent(
+        train_loader_ccta,
+        model,
+        output_dir="/data/jzk/CT/data_522/",
+        split="train",
+        rgb="ccta_latents",
+        save_latent=True,
+        eval=False,
+    )
 
     # got_latent(
     #     val_loader_ncct,

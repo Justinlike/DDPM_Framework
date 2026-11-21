@@ -24,7 +24,7 @@ def data_transform_3d_m11():
     data_transform = {
         "train": T.Compose([
             T.Resize((-1, -1, 64), image_interpolation="linear"),
-            T.RandomFlip(),
+            # T.RandomFlip(),
             tio.Lambda(custom_standardize),
         ]),
         "val": T.Compose([
@@ -129,13 +129,14 @@ class VQGAN_Dataset(BaseDataset):
         # Queue ignores indices, so enforce the Dataset iteration boundary here.
         if index < 0 or index >= len(self):
             raise IndexError(index)
-        patch_image = self.queue[index]["data"]
+        subject = self.queue[index]
+        patch_image = subject["data"]
         image = patch_image.data.float()
         # TorchIO uses (C, H, W, D); VQGAN expects (C, D, H, W).
         image = image.permute(0, 3, 1, 2).contiguous()
         return {
             "data": image, 
-            "id": self.queue[index]["ID"], 
+            "id": subject["ID"], 
             "affine": torch.as_tensor(
                 patch_image.affine.copy(),
                 dtype=torch.float64,
