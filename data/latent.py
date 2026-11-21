@@ -1,119 +1,67 @@
-import os
-from .base_dataset import BaseDataset
-import nibabel as nib
+"""Paired NCCT/CCTA latents exported by infer_vqgan.py."""
+from pathlib import Path
+
 import torch
-import torchio as tio
-from torchio import transforms as T
-from torchio.data import UniformSampler
-from einops import rearrange
+from .base_dataset import BaseDataset
 
-def data_transform_3d():
-    # define the min-max normalization transform
-    # [-1, 1] transformation achieved in Baser class.
-    def custom_standardize(image):
-        max = image.max()
-        min = image.min()
-        return (image - min) / (max - min)
-
-    def resize_hw(image):
-        B, H, W, D = image.shape
-        return T.Resize((256, 256, D), image_interpolation='linear')(image)
-    
-    data_transform = {
-        "train": T.Compose([
-            # # tio 中，resize的-1表示维度不变
-            # tio.Lambda(resize_hw),
-            # T.Resize((256, 256, -1), image_interpolation='linear'),
-            T.RandomFlip(),
-            # tio.Lambda(custom_standardize),
-        ]),
-        "val": T.Compose([
-            # tio.Lambda(resize_hw),
-            # T.Resize((256, 256, -1), image_interpolation='linear'),
-            # tio.Lambda(custom_standardize),
-        ]),
-        "test": T.Compose([
-            # tio.Lambda(resize_hw),
-            # T.Resize((256, 256, -1), image_interpolation='linear'),
-            # tio.Lambda(custom_standardize),
-        ]),
-    }
-
-    return data_transform
 
 class CT_Latent(BaseDataset):
+    """Load one paired volume per item, with tensors in [C,D,H,W] order.
+
+    Expected paths: dataset_dir/split/{ncct_latents,ccta_latents}/{ID}.pt.
+    Files contain {'latent': Tensor, 'affine': Tensor or numpy.ndarray}.
+    Only load trusted, locally exported files: NumPy affine metadata requires
+    weights_only=False. No resize, normalization, flip or patch sampling occurs.
+    BaseDataset supplies paired paths and __len__, as in CT3D.
+    Its PIL transforms are unused because __getitem__ is overridden.
+    resolution is metadata only; saved tensor dimensions are preserved.
+    """
+
     def __init__(
-            self,
-            queue_length = 16,
-            samples_per_volume = 16,
-            patch_size = (96, 96, 64),
-            num_workers = 8,
-            shuffle_subjects = True,
-            shuffle_patches = True,
-            **kwargs
-        ):
-        dataset_dir = kwargs.get("dataset_dir")
-        split = kwargs.get("split")
-        kwargs["dataset_dir"] = os.path.join(dataset_dir, split)
-        # 继承BaseDataset只起到加载数据集的作用，主要是获取ncct和ccta的路径，不对数据处理
-        # 
+        self, dataset_dir, split, resolution=256, seed=42,
+        num_workers=0, train_index=None, valid_index=None,
+    ):
+        # Do not pass a 3D resolution to BaseDataset's unused 2D Resize.
         super().__init__(
+            dataset_dir=str(Path(dataset_dir) / split),
+            split=split,
             rgb_subfolder="ncct_latents",
             mask_subfolder="ccta_latents",
             rgb_name_mode=".pt",
             mask_name_mode=".pt",
-            **kwargs, 
+            seed=seed,
+            train_index=train_index,
+            valid_index=valid_index,
         )
-        resolution_3d = kwargs["resolution"]
+        self.resolution = resolution
+        if not self.image_filenames:
+            raise ValueError(f"Empty latent dataset: {self.dataset_dir}")
+        missing = [path for path in self.mask_filenames if not Path(path).is_file()]
+        if missing:
+            raise FileNotFoundError(f"Missing paired CCTA latents: {missing}")
 
-        self.subjects = []
-
-        print(len(self.image_filenames))
-        print(len(self.mask_filenames))
-        
-        for ncct, ccta, file in zip(self.image_filenames, self.mask_filenames, self.base_filenames):
-            # /data/jzk/CT/data_cba/train/ncct/1079294.nii.gz /data/jzk/CT/data_cba/train/ccta/1079294.nii.gz 1079294
-            # 也许再加一个affine矩阵
-            subject = tio.Subject(
-                imgs=torch.load(
-                    ncct, 
-                    map_location="cpu",
-                    weights_only=True,
-                )["latent"].float(), 
-                labels=torch.load(
-                    ccta, 
-                    map_location="cpu", 
-                    weights_only=True
-                )["latent"].float(),
-                ID=file
-            )
-            self.subjects.append(subject)
-        
-        trans = data_transform_3d()
-
-        # load the augment and norm policy
-        self.dataset = tio.SubjectsDataset(self.subjects, transform=trans[split])
-
-        # 从整幅图像中抽取 patch，缓存起来, patch size 就是传入的resolution
-        self.queue_set = tio.Queue(
-            subjects_dataset=self.dataset,
-            max_length=queue_length,                # 队列中最多缓存的patch数
-            samples_per_volume=samples_per_volume,  # 抽取patch的数量
-            sampler=UniformSampler(resolution_3d),  # 抽取patch的分辨率，以供最后拼回去
-            num_workers=num_workers,
-            # shuffle_subjects=shuffle_subjects,  # 是否打乱subject的顺序，训练时为True，测试时为False
-            # shuffle_patches=shuffle_patches,    # 是否打乱patch的顺序，
-            shuffle_subjects=True if split == "train" else False,  # 是否打乱subject的顺序，训练时为True，测试时为False
-            shuffle_patches=True if split == "train" else False,   # 是否打乱patch的顺序，训练时为True，测试时为False
-        )
-    
-        
     def __getitem__(self, index):
-        # 不知道是否需要返回affine
-        return self.queue_set[index]
+        ncct = torch.load(self.image_filenames[index], map_location="cpu", weights_only=False)
+        ccta = torch.load(self.mask_filenames[index], map_location="cpu", weights_only=False)
+        imgs = ncct["latent"].float().contiguous()
+        labels = ccta["latent"].float().contiguous()
+        if imgs.ndim != 4 or imgs.shape != labels.shape:
+            raise ValueError(
+                f"{self.base_filenames[index]}: expected matching [C,D,H,W] latents, "
+                f"got {tuple(imgs.shape)} and {tuple(labels.shape)}"
+            )
+        return {
+            "imgs": imgs,
+            "labels": labels,
+            "ID": self.base_filenames[index],
+            # These describe decoded image grids, not latent voxel spacing.
+            "affine": torch.as_tensor(ncct["affine"], dtype=torch.float64),
+            "target_affine": torch.as_tensor(ccta["affine"], dtype=torch.float64),
+        }
+
     
 if __name__ == '__main__':
-    dataset = CT_Latent(dataset_dir='/data/jzk/CT/data_522', split="test", resolution=(128,128,32), seed=42, num_workers=2, queue_length=16, samples_per_volume=16)
+    dataset = CT_Latent(dataset_dir='/data/jzk/CT/data_522', split="train", resolution=(128,128,32), seed=42, num_workers=2,)
     print(f"Dataset length: {len(dataset)}")
 
     for i in dataset:
@@ -127,7 +75,7 @@ if __name__ == '__main__':
         print(i.keys())
         # print(i['imgs'].shape)
         print(i["ID"], i['imgs'].data.shape, i['imgs'].data.max(), i['imgs'].data.min())
-        # break
+        break
 
     # for index in range(min(5, len(dataset.dataset))):
     #     original = dataset.subjects[index]
