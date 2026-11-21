@@ -123,7 +123,7 @@ def _make_dataloaders(cfg: DictConfig) -> tuple[DataLoader, DataLoader]:
 
     return train_loader, val_loader
 
-@hydra.main(config_path='/data/jzk/DDPM_Framework/conf', config_name='config-vqgan-E8-nhidden64', version_base=None)
+@hydra.main(config_path='/data/jzk/DDPM_Framework/conf', config_name='config-vqgan-E8-nhidden32', version_base=None)
 def run(cfg: DictConfig):
     pl.seed_everything(cfg.model.seed)
 

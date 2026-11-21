@@ -24,7 +24,7 @@ def data_transform_3d_m11():
     data_transform = {
         "train": T.Compose([
             T.Resize((-1, -1, 64), image_interpolation="linear"),
-            # T.RandomFlip(),
+            T.RandomFlip(),
             tio.Lambda(custom_standardize),
         ]),
         "val": T.Compose([

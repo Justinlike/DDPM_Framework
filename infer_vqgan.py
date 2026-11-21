@@ -160,21 +160,18 @@ if __name__ == "__main__":
         drop_last=False,
         **loader_kwargs
     )
-
     train_loader_ccta = DataLoader(
         train_ccta,
         shuffle=False,
         drop_last=False,
         **loader_kwargs
     )
-
     val_loader_ncct = DataLoader(
         val_ncct,
         shuffle=False,
         drop_last=False,
         **loader_kwargs
     )
-
     val_loader_ccta = DataLoader(
         val_ccta,
         shuffle=False,
@@ -182,9 +179,26 @@ if __name__ == "__main__":
         **loader_kwargs
     )
 
-
+    # 配置1
+    path1 = "/data/jzk/DDPM_Framework/output/vq_gan/CT3D/single_gpu2_gan_train_32/lightning_logs/version_0/checkpoints/latest_checkpoint.ckpt"
     # /data/jzk/DDPM_Framework/output/vq_gan/CT3D/single_gpu2_gan_train_32/lightning_logs/version_0/checkpoints/latest_checkpoint.ckpt
-    model = load_vqgan("/data/jzk/DDPM_Framework/output/vq_gan/CT3D/single_gpu2_gan_train_32/lightning_logs/version_0/checkpoints/latest_checkpoint.ckpt", device="cuda:0")
+    #   embedding_dim: 256 # 256
+    #   n_codes: 2048
+    #   n_hiddens: 32 # 240
+    #   lr: 3.0e-4
+    #   downsample: [2, 4, 4] # D, H, W [2, 4, 4]
+    #   disc_channels: 64
+    #   disc_layers: 3
+
+    # 配置2 
+    path2 = "/data/jzk/DDPM_Framework/output/vq_gan/CT3D/single_gan_train_Embedding8/lightning_logs/version_2/checkpoints/latest_checkpoint.ckpt"
+    #   embedding_dim: 8
+    #   n_codes: 2048
+    #   n_hiddens: 64 # 240 64 8
+    #   lr: 3.0e-4
+    #   downsample: [2, 4, 4] # D, H, W
+
+    model = load_vqgan(path2, device="cuda:0")
     # print(model)
     model.eval()
 
@@ -196,45 +210,45 @@ if __name__ == "__main__":
     print(len(train_loader_ncct))
     print(len(train_loader_ccta))
 
-    got_latent(
-        train_loader_ncct,
-        model,
-        output_dir="/data/jzk/CT/data_522/",
-        split="train",
-        rgb="ncct_latents",
-        save_latent=True,
-        eval=False,
-    )
-    
-    got_latent(
-        train_loader_ccta,
-        model,
-        output_dir="/data/jzk/CT/data_522/",
-        split="train",
-        rgb="ccta_latents",
-        save_latent=True,
-        eval=False,
-    )
-
     # got_latent(
-    #     val_loader_ncct,
+    #     train_loader_ncct,
     #     model,
     #     output_dir="/data/jzk/CT/data_522/",
-    #     split="test",
+    #     split="train",
     #     rgb="ncct_latents",
     #     save_latent=True,
     #     eval=False,
     # )
-
+    
     # got_latent(
-    #     val_loader_ccta,
+    #     train_loader_ccta,
     #     model,
     #     output_dir="/data/jzk/CT/data_522/",
-    #     split="test",
+    #     split="train",
     #     rgb="ccta_latents",
     #     save_latent=True,
     #     eval=False,
     # )
+
+    got_latent(
+        val_loader_ncct,
+        model,
+        output_dir="/data/jzk/CT/data_522/",
+        split="test",
+        rgb="ncct_latents",
+        save_latent=False,
+        eval=True,
+    )
+
+    got_latent(
+        val_loader_ccta,
+        model,
+        output_dir="/data/jzk/CT/data_522/",
+        split="test",
+        rgb="ccta_latents",
+        save_latent=False,
+        eval=True,
+    )
 
     # for batch in val_dataloader:
     #     img = batch["data"].to(

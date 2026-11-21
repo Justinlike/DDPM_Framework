@@ -74,7 +74,7 @@ if __name__ == '__main__':
         # [2, 1, 512, 512]
         print(i.keys())
         # print(i['imgs'].shape)
-        print(i["ID"], i['imgs'].data.shape, i['imgs'].data.max(), i['imgs'].data.min())
+        print(i["ID"], i['imgs'].data.shape, i['imgs'].data.max(), i['imgs'].data.min(), i['affine'].shape, i['target_affine'].shape, i["labels"].shape)
         break
 
     # for index in range(min(5, len(dataset.dataset))):

@@ -1,6 +1,7 @@
 from torch.nn.modules import ConvTranspose2d
 # from .brain import Brain
 from .ct import CT2D, CT3D
+from .latent import CT_Latent
 from .base_dataset import BaseDataset
 from torch.utils.data import DataLoader
 import torch
@@ -9,6 +10,7 @@ import numpy as np
 dataset_type_dict: dict[str, type[BaseDataset]] = {
     "ct": CT2D,
     "ct3d": CT3D,
+    "ct3d_latent": CT_Latent,
 }
 
 def build_loader(cfg):

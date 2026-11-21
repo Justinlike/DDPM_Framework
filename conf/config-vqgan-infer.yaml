@@ -39,7 +39,7 @@ model:
   gradient_clip_val: 1.0
 
   # VQGAN architecture and losses (the upstream vq_gan_3d defaults).
-  embedding_dim: 256 # 256
+  embedding_dim: 16 # 256
   n_codes: 2048
   n_hiddens: 32 # 240
   lr: 3.0e-4
