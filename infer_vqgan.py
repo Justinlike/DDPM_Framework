@@ -2,10 +2,11 @@ from pathlib import Path
 import torch
 from omegaconf import OmegaConf
 from models.vqgan_3d.vqgan import VQGAN
-from train_vqgan import _make_dataloaders
+from train_vqgan import _make_dataloaders, _make_dataset
 import nibabel as nib
 import numpy as np
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
+from torch.utils.data import DataLoader
 
 def load_vqgan(checkpoint_path, device=None, config_path=None):
     """
@@ -71,6 +72,7 @@ def got_latent(
                 img,
                 quantize=False,
             )
+            del img
             print("latent shape:", latent.shape)
 
             # save latent
@@ -104,17 +106,16 @@ def got_latent(
                 latent = latent.to(
                     device=decode_parameter.device, dtype=decode_parameter.dtype,
                 )
-                del img
 
-                # with torch.autocast(
-                #     device_type=decode_parameter.device.type,
-                #     dtype=torch.float16,
-                #     enabled=decode_parameter.device.type == "cuda",
-                # ):
-                #     reconstruction = model.decoder(model.post_vq_conv(latent))
-                # del latent
-                with torch.inference_mode():
+                # 直接inference mode无法使用，因为会超一点显存，转为fp16来做
+                # with torch.inference_mode():
+                with torch.autocast(
+                    device_type=decode_parameter.device.type,
+                    dtype=torch.float16,
+                    enabled=decode_parameter.device.type == "cuda",
+                ):
                     reconstruction = model.decode(latent, quantize=True)
+                del latent
 
                 # 先移到 CPU，再转 float32，避免在 GPU 上额外创建一份 FP32 输出。
                 reconstruction = reconstruction.cpu().float()
@@ -135,16 +136,55 @@ def got_latent(
                 psnr_list.append(psnr)
                 ssim_list.append(ssim)
                 print(f"PSNR: {psnr:.4f}, SSIM: {ssim:.4f}")
+                del reconstruction, reference
 
     print(f"Average PSNR: {np.mean(psnr_list):.4f}") if eval else None
     print(f"Average SSIM: {np.mean(ssim_list):.4f}") if eval else None
 
 if __name__ == "__main__":
     cfg = OmegaConf.load("/data/jzk/DDPM_Framework/conf/config-vqgan-infer.yaml")
-    train_dataloader, val_dataloader = _make_dataloaders(cfg)
+    # train_dataloader, val_dataloader = _make_dataloaders(cfg)
+    train_ncct, train_ccta, val_ncct, val_ccta = _make_dataset(
+        cfg, cfg.dataset.train_split
+    )
+    loader_kwargs = {
+        "batch_size": cfg.model.batch_size,
+        "num_workers": 0,
+        "pin_memory": torch.cuda.is_available(),
+        "persistent_workers": False,
+    }
+
+    train_loader_ncct = DataLoader(
+        train_ncct,
+        shuffle=False,
+        drop_last=False,
+        **loader_kwargs
+    )
+
+    train_loader_ccta = DataLoader(
+        train_ccta,
+        shuffle=False,
+        drop_last=False,
+        **loader_kwargs
+    )
+
+    val_loader_ncct = DataLoader(
+        val_ncct,
+        shuffle=False,
+        drop_last=False,
+        **loader_kwargs
+    )
+
+    val_loader_ccta = DataLoader(
+        val_ccta,
+        shuffle=False,
+        drop_last=False,
+        **loader_kwargs
+    )
+
 
     # /data/jzk/DDPM_Framework/output/vq_gan/CT3D/single_gpu2_gan_train_32/lightning_logs/version_0/checkpoints/latest_checkpoint.ckpt
-    model = load_vqgan("/data/jzk/DDPM_Framework/output/vq_gan/CT3D/single_gpu2_gan_train_32/lightning_logs/version_0/checkpoints/latest_checkpoint.ckpt", device="cuda:1")
+    model = load_vqgan("/data/jzk/DDPM_Framework/output/vq_gan/CT3D/single_gpu2_gan_train_32/lightning_logs/version_0/checkpoints/latest_checkpoint.ckpt", device="cuda:0")
     # print(model)
     model.eval()
 
@@ -152,19 +192,12 @@ if __name__ == "__main__":
     parameter = next(model.encoder.parameters())
     psnr_list = []
     ssim_list = []
-
-    got_latent(
-        val_dataloader,
-        model,
-        output_dir="/data/jzk/CT/data_522/",
-        split="test",
-        rgb="ncct_latents",
-        save_latent=False,
-        eval=True,
-    )
+    
+    print(len(train_loader_ncct))
+    print(len(train_loader_ccta))
 
     # got_latent(
-    #     train_dataloader,
+    #     train_loader_ncct,
     #     model,
     #     output_dir="/data/jzk/CT/data_522/",
     #     split="train",
@@ -172,22 +205,32 @@ if __name__ == "__main__":
     #     save_latent=True,
     #     eval=False,
     # )
-
+    
     # got_latent(
-    #     val_dataloader,
+    #     train_loader_ccta,
     #     model,
     #     output_dir="/data/jzk/CT/data_522/",
-    #     split="test",
+    #     split="train",
     #     rgb="ccta_latents",
     #     save_latent=True,
     #     eval=False,
     # )
 
     # got_latent(
-    #     train_dataloader,
+    #     val_loader_ncct,
     #     model,
     #     output_dir="/data/jzk/CT/data_522/",
-    #     split="train",
+    #     split="test",
+    #     rgb="ncct_latents",
+    #     save_latent=True,
+    #     eval=False,
+    # )
+
+    # got_latent(
+    #     val_loader_ccta,
+    #     model,
+    #     output_dir="/data/jzk/CT/data_522/",
+    #     split="test",
     #     rgb="ccta_latents",
     #     save_latent=True,
     #     eval=False,
@@ -216,8 +259,9 @@ if __name__ == "__main__":
     #             include_embeddings=True,
     #         )
     #         print("z_quantized shape:", z_quantized.shape)
-    #         # print("indices shape:", indices.shape)
-            
+    #         print("indices shape:", indices.shape)
+    #     break
+    
     #         # nib.save(
     #         #     nib.Nifti1Image(z_quantized.detach().cpu().numpy(), ),
     #         #     f"/data/jzk/CT/data_522/test/ncct_latents/{batch['id'][0]}.nii.gz",

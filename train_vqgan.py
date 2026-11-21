@@ -83,13 +83,13 @@ def _make_dataloaders(cfg: DictConfig) -> tuple[DataLoader, DataLoader]:
     # 合并训练集
     train_dataset = ConcatDataset([
         train_ncct,
-        # train_ccta
+        train_ccta
     ])
 
     # 合并验证集
     val_dataset = ConcatDataset([
         val_ncct,
-        # val_ccta
+        val_ccta
     ])
 
     loader_kwargs = {
@@ -123,7 +123,7 @@ def _make_dataloaders(cfg: DictConfig) -> tuple[DataLoader, DataLoader]:
 
     return train_loader, val_loader
 
-@hydra.main(config_path='/data/jzk/DDPM_Framework/conf', config_name='config-vqgan', version_base=None)
+@hydra.main(config_path='/data/jzk/DDPM_Framework/conf', config_name='config-vqgan-E8-nhidden64', version_base=None)
 def run(cfg: DictConfig):
     pl.seed_everything(cfg.model.seed)
 

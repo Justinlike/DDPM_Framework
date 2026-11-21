@@ -109,6 +109,8 @@ class VQGAN(pl.LightningModule):
             latent = vq_output['encodings']
         h = F.embedding(latent, self.codebook.embeddings)
         h = self.post_vq_conv(shift_dim(h, -1, 1))
+        if quantize:
+            del vq_output
         return self.decoder(h)
 
     def forward(self, x, optimizer_idx=None, log_image=False):
