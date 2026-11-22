@@ -61,7 +61,7 @@ class Tester(Baser):
         print("Test results:", results)
 
     def save_test_3d(self, pred_results, name_test, affine):
-        pred_results = 255 * ((pred_results + 1.0) / 2.0)
+        pred_results = 255 * ((pred_results + 1.0) / 2.0) if self.cfg.data_range != "latent" else pred_results
         print("pred_results shape:", pred_results.shape)
         print("pred_results min:", pred_results.min(), "max:", pred_results.max())
         pred_results = pred_results.cpu()

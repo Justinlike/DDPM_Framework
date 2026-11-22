@@ -12,7 +12,7 @@ import time
 
 # Wavelet Flow Matching using UNet
 class JCT(nn.Module):
-    def __init__(self, config, model=None, num_timesteps=50, method = "heun"):
+    def __init__(self, config, model=None, num_timesteps=50, method = "heun", clip_out=True):
         super().__init__()
 
         self.num_timesteps = num_timesteps
@@ -29,6 +29,7 @@ class JCT(nn.Module):
         self.noise_scale = 1.0
         self.t_eps = 5e-2
         self.method = method
+        self.clip_out = clip_out
 
     
     def forward(self, x, mask=None, **kwargs):
@@ -145,7 +146,7 @@ class JCT(nn.Module):
         # last step euler
         z = self._euler_step(z, timesteps[-2], timesteps[-1])
         # 对隐空间输出限制为 [-1, 1]
-        z = z.clamp(-1.0, 1.0)
+        z = z.clamp(-1.0, 1.0) if self.clip_out else z
 
         return {'predicted': z}
     

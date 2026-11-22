@@ -13,6 +13,7 @@ def build_model(cfg):
     model_name = cfg.model.lower()
     sample_steps = cfg.sample_steps
     sample_method = cfg.sample_method
+    clip_out = cfg.data_range != "latent" if "data_range" in cfg else True
 
     if model_name == "jct":
         with open('/data/jzk/CT/inference.json') as f:
@@ -39,14 +40,14 @@ def build_model(cfg):
         )
         unet = UNet(**model_kwargs)
 
-        model = JCT(config=None, model=unet, num_timesteps=sample_steps, method=sample_method)
+        model = JCT(config=None, model=unet, num_timesteps=sample_steps, method=sample_method, clip_out=clip_out)
     elif model_name == "jct_wunet":
         model_kwargs = OmegaConf.to_container(
                     cfg.model_config,
                     resolve=True,
                 )
         unet = WUNet(**model_kwargs)
-        model = JCT(config=None, model=unet, num_timesteps=sample_steps, method=sample_method)
+        model = JCT(config=None, model=unet, num_timesteps=sample_steps, method=sample_method, clip_out=clip_out)
     else:
         raise NotImplementedError(f"{model_name} is not implementde")
     

@@ -1,9 +1,9 @@
 """Paired NCCT/CCTA latents exported by infer_vqgan.py."""
 from pathlib import Path
-
 import torch
 from .base_dataset import BaseDataset
-
+import torchio as tio
+import numpy as np
 
 class CT_Latent(BaseDataset):
     """Load one paired volume per item, with tensors in [C,D,H,W] order.
@@ -19,7 +19,7 @@ class CT_Latent(BaseDataset):
 
     def __init__(
         self, dataset_dir, split, resolution=256, seed=42,
-        num_workers=0, train_index=None, valid_index=None,
+        num_workers=0, 
     ):
         # Do not pass a 3D resolution to BaseDataset's unused 2D Resize.
         super().__init__(
@@ -30,8 +30,6 @@ class CT_Latent(BaseDataset):
             rgb_name_mode=".pt",
             mask_name_mode=".pt",
             seed=seed,
-            train_index=train_index,
-            valid_index=valid_index,
         )
         self.resolution = resolution
         if not self.image_filenames:
@@ -40,11 +38,31 @@ class CT_Latent(BaseDataset):
         if missing:
             raise FileNotFoundError(f"Missing paired CCTA latents: {missing}")
 
+        self.subjects = []
+        for ncct, ccta, subject_id in zip(self.image_filenames, self.mask_filenames, self.base_filenames):
+            self.subjects.append(tio.Subject(
+                imgs=tio.ScalarImage(ncct, reader=self._read_latent),
+                labels=tio.ScalarImage(ccta, reader=self._read_latent),
+                ID=subject_id,
+            ))
+
+        self.dataset = tio.SubjectsDataset(self.subjects)
+
+    @staticmethod
+    def _read_latent(path):
+        # Only trusted exports; affine metadata may contain a NumPy array.
+        saved = torch.load(path, map_location="cpu", weights_only=False)
+        tensor = saved["latent"].float().permute(0, 2, 3, 1).contiguous()
+        # CHWD latent index grid, not the decoded image's physical grid.
+        return tensor, np.eye(4)
+    
     def __getitem__(self, index):
         ncct = torch.load(self.image_filenames[index], map_location="cpu", weights_only=False)
         ccta = torch.load(self.mask_filenames[index], map_location="cpu", weights_only=False)
-        imgs = ncct["latent"].float().contiguous()
-        labels = ccta["latent"].float().contiguous()
+        # [C, D, H, W] -> [C, H, W, D]
+        # 因为我们实现的unet，会先做permute
+        imgs = ncct["latent"].permute(0, 2, 3, 1).float().contiguous()
+        labels = ccta["latent"].permute(0, 2, 3, 1).float().contiguous()
         if imgs.ndim != 4 or imgs.shape != labels.shape:
             raise ValueError(
                 f"{self.base_filenames[index]}: expected matching [C,D,H,W] latents, "

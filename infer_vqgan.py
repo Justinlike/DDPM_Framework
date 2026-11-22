@@ -191,10 +191,10 @@ if __name__ == "__main__":
     #   disc_layers: 3
 
     # 配置2 
-    path2 = "/data/jzk/DDPM_Framework/output/vq_gan/CT3D/single_gan_train_Embedding8/lightning_logs/version_2/checkpoints/latest_checkpoint.ckpt"
-    #   embedding_dim: 8
+    path2 = "/data/jzk/DDPM_Framework/output/vq_gan/CT3D/single_gan_train_E32_N32/lightning_logs/version_0/checkpoints/latest_checkpoint.ckpt"
+    #   embedding_dim: 8 # 不影响显存
     #   n_codes: 2048
-    #   n_hiddens: 64 # 240 64 8
+    #   n_hiddens: 32 # 240 64 8 # n_h 64无法加载
     #   lr: 3.0e-4
     #   downsample: [2, 4, 4] # D, H, W
 
@@ -248,7 +248,7 @@ if __name__ == "__main__":
         rgb="ccta_latents",
         save_latent=False,
         eval=True,
-    )
+    ) 
 
     # for batch in val_dataloader:
     #     img = batch["data"].to(

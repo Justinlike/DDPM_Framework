@@ -123,6 +123,8 @@ def dorange_inputs(output: torch.Tensor, target: torch.Tensor, datarange: str) -
         # print("Converting output and target from [-1, 1] to [0, 1]")
         output = (output + 1.0) / 2.0
         target = (target + 1.0) / 2.0
+    elif datarange == "latent":
+        return output, target
     elif datarange != "01":
         raise ValueError(
             f"Unsupported datarange: {datarange}. "

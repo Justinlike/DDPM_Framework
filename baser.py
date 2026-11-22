@@ -74,7 +74,8 @@ class Baser():
             #targets = rearrange(targets, '(b z) c h w -> b c h w z', b=1)
             #print(predicteds.shape, targets.shape, targets.max(), targets.min())
         #targets = 255 * targets   # [0,255]
-        targets = (2 * targets) - 1
+        if self.model_range == "m11":
+            targets = (2 * targets) - 1
         # predicteds = torch.where(torch.mean(predicteds, dim=1, keepdim=True) > 0.5, 1, 0).long()
         # targets = torch.mean(targets, dim=1, keepdim=True).long()
         # predicteds = torch.where(torch.mean(predicteds, dim=1, keepdim=True) > 0.5, 1, 0).long()
