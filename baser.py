@@ -51,7 +51,7 @@ class Baser():
     def compute_loss(self, output, labels):
         if self.args.ctiterion == "in":
             return output["loss"]
-
+        
         return self.criterion(output["predicted"], labels.to(output["predicted"].dtype))
 
     def postprocess(self, batch, output):

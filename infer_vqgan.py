@@ -191,7 +191,7 @@ if __name__ == "__main__":
     #   disc_layers: 3
 
     # 配置2 
-    path2 = "/data/jzk/DDPM_Framework/output/vq_gan/CT3D/single_gan_train_E32_N32/lightning_logs/version_0/checkpoints/latest_checkpoint.ckpt"
+    path2 = "/data/jzk/DDPM_Framework/output/vq_gan/CT3D/single_gan_train_E8_N32/lightning_logs/version_1/checkpoints/latest_checkpoint.ckpt"
     #   embedding_dim: 8 # 不影响显存
     #   n_codes: 2048
     #   n_hiddens: 32 # 240 64 8 # n_h 64无法加载

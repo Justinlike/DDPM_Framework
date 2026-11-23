@@ -31,7 +31,7 @@ model:
   scale_lr: true
   default_root_dir: output/vq_gan
   default_root_dir_postfix: ct3d
-  resume_from_checkpoint: null
+  resume_from_checkpoint: /data/jzk/DDPM_Framework/output/vq_gan/CT3D/single_gan_train_E8_N32/lightning_logs/version_1/checkpoints/epoch=5-step=159000-train/recon_loss=0.03.ckpt
   auto_resume: false # true
   max_steps: -1
   max_epochs: -1
