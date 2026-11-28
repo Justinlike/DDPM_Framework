@@ -217,6 +217,8 @@ class Trainer(BaseTrainer):
                 output = self.forward(batch, require_grad=False, generator=None)
                 prediction, target = self.postprocess(batch, output)
                 metrics.update(prediction, target)
+                if self.overfit_one_patch:
+                    self._save_fixed_patch_images(batch, prediction, target, step)
                 patches += batch["imgs"].shape[0]
         results = metrics.compute()
         logged = (
@@ -229,3 +231,47 @@ class Trainer(BaseTrainer):
         )
         self.model.train()
         return results
+
+    def _save_fixed_patch_images(self, batch, prediction, target, step):
+        """Save every depth slice with fixed intensity/error scales across epochs."""
+        from PIL import Image, ImageDraw
+
+        destination = (
+            Path(self.cfg.output_dir) / self.cfg.job_name / "fixed_patch_visuals"
+            / f"step-{step:06d}"
+        )
+        destination.mkdir(parents=True, exist_ok=True)
+        # Dataset inputs are [0,1]; postprocess outputs follow model_range.
+        ncct = batch["imgs"][0].detach().cpu().float()
+        predicted = prediction[0].detach().cpu().float()
+        truth = target[0].detach().cpu().float()
+        if self.model_range == "m11":
+            predicted = (predicted + 1) / 2
+            truth = (truth + 1) / 2
+        # Match image metric clipping; retain unclipped prediction for diagnosis.
+        unclipped_prediction = predicted.clone()
+        predicted = predicted.clamp(0, 1)
+        truth = truth.clamp(0, 1)
+        error = (predicted - truth).abs()
+        torch.save({
+            "ncct": ncct, "ccta": truth, "predicted_ccta": predicted,
+            "unclipped_prediction": unclipped_prediction, "absolute_error": error,
+            "layout": "CHWD", "intensity_range": "normalized [0,1], not HU",
+        }, destination / "volumes.pt")
+        # Fixed 0..0.2 error scale: brighter means larger normalized error.
+        # Never independently min/max-normalize the four images.
+        for z in range(ncct.shape[-1]):
+            planes = [ncct[0, :, :, z], truth[0, :, :, z],
+                      predicted[0, :, :, z], error[0, :, :, z] / 0.2]
+            height, width = planes[0].shape
+            canvas = Image.new("RGB", (4 * width, height + 60), "white")
+            draw = ImageDraw.Draw(canvas)
+            labels = ["NCCT [0,1]", "True CCTA [0,1]",
+                      "Pred CCTA [0,1]", "Abs error [0,0.2]"]
+            for column, (plane, label) in enumerate(zip(planes, labels)):
+                pixels = (plane.clamp(0, 1) * 255).round().to(torch.uint8).numpy()
+                canvas.paste(Image.fromarray(pixels).convert("RGB"), (column * width, 40))
+                draw.text((column * width + 4, 22), label, fill="black")
+            draw.text((4, 4), f"Step {step}, patch slice {z}; error white >= 0.2", fill="black")
+            canvas.save(destination / f"slice-{z:03d}.png")
+        self.logger.info(f"Fixed patch comparison images saved to {destination}")
