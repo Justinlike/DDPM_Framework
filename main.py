@@ -13,7 +13,8 @@ from tools import *
 # print("utils", utils.__file__)
 from data import *
 from losses import *
-from trainer import Trainer
+# from trainer import Trainer
+from patch_trainer import Trainer
 from tester import Tester
 
 import numpy as np

@@ -11,6 +11,7 @@ import os
 import numpy as np
 from PIL import Image
 import torchio as tio
+import random
 
 class Trainer(Baser):
     def __init__(self, args, accelerator, model, ema_model, train_loader, valid_loader, 
@@ -31,10 +32,16 @@ class Trainer(Baser):
         start_time = time.time()
         self.logger.info("Start Training")
 
+        # seed_rng = (
+        #     random.Random(self.cfg.seed)
+        #     if self.cfg.seed is not None
+        #     else None
+        # )
         global_seed_sequence = generate_seed_sequence(
             initial_seed=self.cfg.seed,
             length=self.cfg.max_train_steps,
         )
+        print(f"global_seed_sequence: {len(global_seed_sequence)}, first 10 seeds: {global_seed_sequence[:10]}")
 
         num_update_steps_per_epoch = math.ceil(
             len(self.train_loader) / self.accelerator.gradient_accumulation_steps
@@ -72,6 +79,14 @@ class Trainer(Baser):
                 # globally consistent random generators 
                 # 随机数生成器，用来控制后续的随机过程
                 with self.accelerator.accumulate(self.model):
+                    # if seed_rng is not None:
+                    #     local_seed = seed_rng.randrange(0, 2**63)
+                    #     rand_num_generator = torch.Generator(
+                    #         device=self.accelerator.device
+                    #     )
+                    #     rand_num_generator.manual_seed(local_seed)
+                    # else:
+                    #     rand_num_generator = None
                     if self.cfg.seed is not None:
                         try:
                             local_seed = global_seed_sequence.pop()
@@ -181,6 +196,7 @@ class Trainer(Baser):
                            disable=not self.accelerator.is_main_process)
             # for batch in tqdm(self.valid_loader, desc="Validation", disable=not self.accelerator.is_main_process):
             # for batch in self.valid_loader:
+            # 对valid_loader的每个batch，使用不同的随机种子进行推理，保证每次推理的随机性一致。
             for batch in val_bar:
                 seed = val_seed_ls. pop()
                 if seed is None:

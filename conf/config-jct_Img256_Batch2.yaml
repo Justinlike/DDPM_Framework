@@ -6,7 +6,7 @@ metrics:
   - ssim
 nrow: 6
 output_dir: output
-job_name: jct_Img256_Batch2
+job_name: test_jct_Img256_Batch2
 excluding_modules: null
 
 # tracker

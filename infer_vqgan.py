@@ -191,14 +191,23 @@ if __name__ == "__main__":
     #   disc_layers: 3
 
     # 配置2 
-    path2 = "/data/jzk/DDPM_Framework/output/vq_gan/CT3D/single_gan_train_E8_N32/lightning_logs/version_1/checkpoints/latest_checkpoint.ckpt"
+    path2 = "/data/jzk/DDPM_Framework/output/vq_gan/CT3D/single_gan_train_E8_N32/lightning_logs/version_4/checkpoints/latest_checkpoint.ckpt"
     #   embedding_dim: 8 # 不影响显存
     #   n_codes: 2048
     #   n_hiddens: 32 # 240 64 8 # n_h 64无法加载
     #   lr: 3.0e-4
     #   downsample: [2, 4, 4] # D, H, W
 
-    model = load_vqgan(path2, device="cuda:0")
+    # 配置3
+    path3 = "/data/jzk/DDPM_Framework/output/vq_gan/CT3D/single_gan_train_E16_N32/lightning_logs/version_1/checkpoints/latest_checkpoint.ckpt"
+    #   embedding_dim: 16 # 不影响显存
+    #   n_codes: 2048
+    #   n_hiddens: 32 # 240 64 8 # n_h 64无法加载
+    #   lr: 3.0e-4
+    #   downsample: [2, 4, 4] # D, H, W
+    
+
+    model = load_vqgan(path3, device="cuda:0")
     # print(model)
     model.eval()
 

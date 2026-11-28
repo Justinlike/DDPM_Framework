@@ -11,6 +11,7 @@ class Baser():
         self.model_range = kwaegs.get("model_range", "m11")  # 模型输出范围，默认 [-1, 1]
 
     def forward(self, samples, require_grad=True, **kwargs):
+        # 传入rand_num_generator有什么用？
         # 将这里对数据集预处理的功能全都移到dataset中。
         # imgs = samples['imgs'][tio.DATA].cuda(non_blocking=True)
         # #imgs = imgs * 2.0 - 1.0
@@ -49,7 +50,7 @@ class Baser():
         return output
     
     def compute_loss(self, output, labels):
-        if self.args.ctiterion == "in":
+        if self.args.criterion == "in":
             return output["loss"]
         
         return self.criterion(output["predicted"], labels.to(output["predicted"].dtype))

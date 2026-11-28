@@ -12,7 +12,7 @@ dataset:
 
   # TorchIO samples patches as (H, W, D). train_vqgan.py converts them to
   # the VQGAN layout (C, D, H, W), in dataset, we will permute it.
-  resolution: [256, 256, 64] # H, W, D 128 128 64
+  resolution: [224, 224, 64] # H, W, D 128 128 64
   queue_length: 16
   samples_per_volume: 16
 
@@ -39,7 +39,7 @@ model:
   gradient_clip_val: 1.0
 
   # VQGAN architecture and losses (the upstream vq_gan_3d defaults).
-  embedding_dim: 32
+  embedding_dim: 16
   n_codes: 2048
   n_hiddens: 32 # 240 64 8
   lr: 3.0e-4
