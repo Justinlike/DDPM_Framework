@@ -18,6 +18,7 @@ Latent datasets keep their existing whole-latent-per-item behavior.
 """
 import math
 import random
+from pathlib import Path
 
 import torch
 import torchio as tio
@@ -25,6 +26,7 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from data.build import collate_fn
+from data.ct import data_transform_3d
 from tools.metric import build_metric
 from tools.save_model import save_model
 from trainer import Trainer as BaseTrainer
@@ -33,7 +35,7 @@ from trainer import Trainer as BaseTrainer
 class Trainer(BaseTrainer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.is_latent = self.cfg.dataset_name in {"latent", "ct3d_latent"}
+        self.is_latent = self.cfg.data_range == "latent"
         if self.accelerator.num_processes != 1:
             raise ValueError("patch_trainer currently requires --num_processes 1")
         if self.cfg.dataset_name not in {"ct3d", "ct3d_latent"}:
@@ -43,7 +45,42 @@ class Trainer(BaseTrainer):
 
         train_dataset = self.train_loader.dataset
         self.valid_subjects = self.valid_loader.dataset.dataset
-        if self.is_latent:
+        self.overfit_one_patch = bool(self.cfg.get("overfit_one_patch", False))
+        if self.overfit_one_patch:
+            if self.is_latent:
+                raise ValueError("overfit_one_patch currently supports image-space ct3d only")
+            # Select by stable subject ID, not the filesystem's listing order.
+            subject_id = str(self.cfg.fixed_subject_id)
+            subjects = [s for s in train_dataset.subjects if str(s["ID"]) == subject_id]
+            if len(subjects) != 1:
+                raise ValueError(f"Expected one training subject with ID {subject_id}, found {len(subjects)}")
+            # Use deterministic preprocessing: no training RandomFlip.
+            subject = tio.SubjectsDataset(
+                subjects, transform=data_transform_3d()["test"]
+            )[0]
+            grid = tio.GridSampler(subject, patch_size=tuple(self.cfg.resolution), patch_overlap=0)
+            patch_index = int(self.cfg.get("fixed_patch_index", 0))
+            if not 0 <= patch_index < len(grid):
+                raise ValueError(f"fixed_patch_index must be in [0, {len(grid) - 1}]")
+            fixed_patch = grid[patch_index]
+            repeats = int(self.cfg.get("fixed_patch_repeats", 100))
+            if repeats < 1:
+                raise ValueError("fixed_patch_repeats must be positive")
+            # Cache tensors once; no queue or augmentation runs during training.
+            pair = {key: fixed_patch[key].data.clone() for key in ("imgs", "labels")}
+            patch_dataset = [pair] * repeats
+            self.valid_subjects = [fixed_patch]
+            debug_dir = Path(self.cfg.output_dir) / self.cfg.job_name
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            torch.save({**pair, "subject_id": subject_id,
+                        "location": fixed_patch[tio.LOCATION],
+                        "patch_index": patch_index}, debug_dir / "fixed_patch.pt")
+            self.logger.info(
+                f"Single-patch fitting: subject={subject_id}, grid index={patch_index}, "
+                f"location={fixed_patch[tio.LOCATION].tolist()}, repeats={repeats}. "
+                "Evaluation uses this SAME training patch, not held-out validation data."
+            )
+        elif self.is_latent:
             patch_dataset = train_dataset
         else:
             samples = int(self.cfg.get("train_patches_per_subject", 16))
@@ -182,7 +219,11 @@ class Trainer(BaseTrainer):
                 metrics.update(prediction, target)
                 patches += batch["imgs"].shape[0]
         results = metrics.compute()
-        self.accelerator.log(results, step=step)
+        logged = (
+            {f"overfit_patch/{key}": value for key, value in results.items()}
+            if self.overfit_one_patch else results
+        )
+        self.accelerator.log(logged, step=step)
         self.logger.info(
             f"Validation: {len(self.valid_subjects)} subjects, {patches} patches"
         )
