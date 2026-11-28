@@ -17,6 +17,7 @@ UP to complete epochs, so the final update count can exceed max_train_steps.
 Latent datasets keep their existing whole-latent-per-item behavior.
 """
 import math
+import json
 import random
 from pathlib import Path
 
@@ -59,26 +60,39 @@ class Trainer(BaseTrainer):
                 subjects, transform=data_transform_3d()["test"]
             )[0]
             grid = tio.GridSampler(subject, patch_size=tuple(self.cfg.resolution), patch_overlap=0)
-            patch_index = int(self.cfg.get("fixed_patch_index", 0))
-            if not 0 <= patch_index < len(grid):
-                raise ValueError(f"fixed_patch_index must be in [0, {len(grid) - 1}]")
-            fixed_patch = grid[patch_index]
+            self.fixed_patch_indices = [int(i) for i in self.cfg.get(
+                "fixed_patch_indices", [self.cfg.get("fixed_patch_index", 0)]
+            )]
+            if not self.fixed_patch_indices or len(set(self.fixed_patch_indices)) != len(self.fixed_patch_indices):
+                raise ValueError("fixed_patch_indices must be nonempty and contain no duplicates")
+            if any(i < 0 or i >= len(grid) for i in self.fixed_patch_indices):
+                raise ValueError(f"fixed_patch_indices must be in [0, {len(grid) - 1}]")
             repeats = int(self.cfg.get("fixed_patch_repeats", 100))
             if repeats < 1:
                 raise ValueError("fixed_patch_repeats must be positive")
-            # Cache tensors once; no queue or augmentation runs during training.
-            pair = {key: fixed_patch[key].data.clone() for key in ("imgs", "labels")}
-            patch_dataset = [pair] * repeats
-            self.valid_subjects = [fixed_patch]
+            self.valid_subjects = []
+            pairs = []
             debug_dir = Path(self.cfg.output_dir) / self.cfg.job_name
             debug_dir.mkdir(parents=True, exist_ok=True)
-            torch.save({**pair, "subject_id": subject_id,
-                        "location": fixed_patch[tio.LOCATION],
-                        "patch_index": patch_index}, debug_dir / "fixed_patch.pt")
+            for patch_index in self.fixed_patch_indices:
+                fixed_patch = grid[patch_index]
+                pair = {key: fixed_patch[key].data.clone() for key in ("imgs", "labels")}
+                pairs.append(pair)
+                self.valid_subjects.append(fixed_patch)
+                filename = ("fixed_patch.pt" if len(self.fixed_patch_indices) == 1
+                            else f"fixed_patch-{patch_index:03d}.pt")
+                torch.save({**pair, "subject_id": subject_id,
+                            "location": fixed_patch[tio.LOCATION],
+                            "patch_index": patch_index}, debug_dir / filename)
+                self.logger.info(
+                    f"Fixed training patch: subject={subject_id}, grid index={patch_index}, "
+                    f"location={fixed_patch[tio.LOCATION].tolist()}"
+                )
+            # Each cached pair is used repeats times per epoch; no augmentation.
+            patch_dataset = pairs * repeats
             self.logger.info(
-                f"Single-patch fitting: subject={subject_id}, grid index={patch_index}, "
-                f"location={fixed_patch[tio.LOCATION].tolist()}, repeats={repeats}. "
-                "Evaluation uses this SAME training patch, not held-out validation data."
+                f"Fixed-patch fitting: {len(pairs)} patches, {repeats} repeats EACH. "
+                "Evaluation uses these SAME training patches, not held-out data."
             )
         elif self.is_latent:
             patch_dataset = train_dataset
@@ -100,7 +114,7 @@ class Trainer(BaseTrainer):
         loader = DataLoader(
             patch_dataset,
             batch_size=self.cfg.train_batch_size,
-            shuffle=self.is_latent,
+            shuffle=self.is_latent or self.overfit_one_patch,
             num_workers=0,
             drop_last=False,
             collate_fn=collate_fn,
@@ -197,8 +211,12 @@ class Trainer(BaseTrainer):
         # postprocess returns CPU tensors, so metric states must also be on CPU.
         metrics = build_metric(self.cfg, torch.device("cpu"))
         patches = 0
-        for subject in tqdm(self.valid_subjects, desc="Validate subjects"):
-            if self.is_latent:
+        patch_logs = {}
+        for subject_index, subject in enumerate(tqdm(
+            self.valid_subjects,
+            desc="Evaluate fixed training patches" if self.overfit_one_patch else "Validate subjects",
+        )):
+            if self.is_latent or self.overfit_one_patch:
                 subject_patches = [subject]
             else:
                 subject_patches = tio.GridSampler(
@@ -218,28 +236,44 @@ class Trainer(BaseTrainer):
                 prediction, target = self.postprocess(batch, output)
                 metrics.update(prediction, target)
                 if self.overfit_one_patch:
-                    self._save_fixed_patch_images(batch, prediction, target, step)
+                    patch_index = self.fixed_patch_indices[subject_index]
+                    patch_metrics = build_metric(self.cfg, torch.device("cpu"))
+                    patch_metrics.update(prediction, target)
+                    scores = patch_metrics.compute()
+                    patch_logs.update({f"overfit_patch/patch_{patch_index:03d}/{key}": value
+                                       for key, value in scores.items()})
+                    self.logger.info(f"Fixed patch {patch_index}: {scores}")
+                    self._save_fixed_patch_images(batch, prediction, target, step, patch_index)
+                    destination = self._fixed_patch_image_dir(step, patch_index)
+                    (destination / "metrics.json").write_text(json.dumps(scores, indent=2))
                 patches += batch["imgs"].shape[0]
         results = metrics.compute()
         logged = (
             {f"overfit_patch/{key}": value for key, value in results.items()}
             if self.overfit_one_patch else results
         )
+        logged.update(patch_logs)
         self.accelerator.log(logged, step=step)
         self.logger.info(
-            f"Validation: {len(self.valid_subjects)} subjects, {patches} patches"
+            (f"Training-patch evaluation: 1 subject, {patches} fixed patches"
+             if self.overfit_one_patch else
+             f"Validation: {len(self.valid_subjects)} subjects, {patches} patches")
         )
         self.model.train()
         return results
 
-    def _save_fixed_patch_images(self, batch, prediction, target, step):
+    def _fixed_patch_image_dir(self, step, patch_index):
+        destination = (Path(self.cfg.output_dir) / self.cfg.job_name
+                       / "fixed_patch_visuals" / f"step-{step:06d}")
+        if len(self.fixed_patch_indices) > 1:
+            destination = destination / f"patch-{patch_index:03d}"
+        return destination
+
+    def _save_fixed_patch_images(self, batch, prediction, target, step, patch_index):
         """Save every depth slice with fixed intensity/error scales across epochs."""
         from PIL import Image, ImageDraw
 
-        destination = (
-            Path(self.cfg.output_dir) / self.cfg.job_name / "fixed_patch_visuals"
-            / f"step-{step:06d}"
-        )
+        destination = self._fixed_patch_image_dir(step, patch_index)
         destination.mkdir(parents=True, exist_ok=True)
         # Dataset inputs are [0,1]; postprocess outputs follow model_range.
         ncct = batch["imgs"][0].detach().cpu().float()
@@ -272,6 +306,6 @@ class Trainer(BaseTrainer):
                 pixels = (plane.clamp(0, 1) * 255).round().to(torch.uint8).numpy()
                 canvas.paste(Image.fromarray(pixels).convert("RGB"), (column * width, 40))
                 draw.text((column * width + 4, 22), label, fill="black")
-            draw.text((4, 4), f"Step {step}, patch slice {z}; error white >= 0.2", fill="black")
+            draw.text((4, 4), f"Step {step}, patch {patch_index}, slice {z}; error white >= 0.2", fill="black")
             canvas.save(destination / f"slice-{z:03d}.png")
         self.logger.info(f"Fixed patch comparison images saved to {destination}")
